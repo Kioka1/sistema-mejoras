@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, UserPlus, Pencil } from "lucide-react";
 import { fetchUsuarios, crearUsuario, editarUsuario } from "../api.js";
 
-const SEDES = ["El Alto", "Cochabamba", "Santa Cruz", "La Paz", "Nacional"];
-
 export default function UsuariosView() {
   const [usuarios, setUsuarios] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -75,7 +73,7 @@ export default function UsuariosView() {
           <th>Nombre</th>
           <th>Correo</th>
           <th>Rol</th>
-          <th>Sede</th>
+          <th>Área / Carrera</th>
           <th>Estado</th>
           <th className="col-actions"></th>
         </tr>
@@ -101,7 +99,7 @@ export default function UsuariosView() {
                 {u.rol === "admin" ? "Admin" : "Usuario"}
               </span>
             </td>
-            <td>{u.sede || "—"}</td>
+            <td>{u.rol === "usuario" ? u.area || "— sin área —" : "—"}</td>
             <td>
               <span
                 className={`pill ${
@@ -137,6 +135,7 @@ function NuevoUsuarioForm({ onCancel, onCreated }) {
     password: "",
     rol: "usuario",
     sede: "El Alto",
+    area: "",
   });
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
@@ -146,6 +145,10 @@ function NuevoUsuarioForm({ onCancel, onCreated }) {
   const enviar = async () => {
     if (!form.nombre_completo.trim() || !form.correo.trim() || !form.password.trim()) {
       setError("Completa nombre, correo y contraseña");
+      return;
+    }
+    if (form.rol === "usuario" && !form.area.trim()) {
+      setError("Indica el área o carrera del usuario");
       return;
     }
     setEnviando(true);
@@ -194,13 +197,14 @@ function NuevoUsuarioForm({ onCancel, onCreated }) {
         </div>
 
         {form.rol === "usuario" && (
-          <div style={{ marginTop: 12 }}>
-            <label className="field-label">Sede</label>
-            <select className="text-input" value={form.sede} onChange={set("sede")}>
-              {SEDES.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
+          <div style={{ marginTop: 12, maxWidth: 420 }}>
+            <label className="field-label">Área / Carrera (ej. ODO)</label>
+            <input
+              className="text-input"
+              value={form.area}
+              onChange={set("area")}
+              placeholder="Las acciones de esta área le llegarán a este usuario"
+            />
           </div>
         )}
 
@@ -219,6 +223,7 @@ function EditarUsuarioForm({ usuario, onCancel, onSaved }) {
   const [form, setForm] = useState({
     nombre_completo: usuario.nombre_completo,
     sede: usuario.sede || "El Alto",
+    area: usuario.area || "",
     // Normalizar: true solo si es explícitamente activo
     activo: usuario.activo === true || usuario.activo === 1 || usuario.activo === "1",
     password: "",
@@ -235,6 +240,7 @@ function EditarUsuarioForm({ usuario, onCancel, onSaved }) {
       const cambios = {
         nombre_completo: form.nombre_completo,
         sede: usuario.rol === "usuario" ? form.sede : null,
+        area: usuario.rol === "usuario" ? form.area.trim() : null,
         activo: Boolean(form.activo), // siempre boolean true/false
       };
       if (form.password.trim()) cambios.password = form.password.trim();
@@ -260,17 +266,14 @@ function EditarUsuarioForm({ usuario, onCancel, onSaved }) {
             <label className="field-label">Nombre completo</label>
             <input className="text-input" value={form.nombre_completo} onChange={set("nombre_completo")} />
           </div>
-          {usuario.rol === "usuario" && (
-            <div>
-              <label className="field-label">Sede</label>
-              <select className="text-input" value={form.sede} onChange={set("sede")}>
-                {SEDES.map((s) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
-            </div>
-          )}
         </div>
+
+        {usuario.rol === "usuario" && (
+          <div style={{ marginTop: 12, maxWidth: 420 }}>
+            <label className="field-label">Área / Carrera</label>
+            <input className="text-input" value={form.area} onChange={set("area")} />
+          </div>
+        )}
 
         <div className="grid-2" style={{ marginTop: 12 }}>
           <div>

@@ -17,23 +17,29 @@ en http://localhost:8000/docs
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from typing import Optional, List
+import os
+import re
+import uuid
 from datetime import datetime, date
 from io import BytesIO
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
-from database import Base, engine, get_db, Registro, AccionMejora, HistorialAccion, Solicitud, HistorialSolicitud, Usuario
-from auth import obtener_usuario_actual, requerir_admin, requerir_admin_descarga, verificar_password, crear_token, hashear_password
+from database import Base, engine, get_db, Registro, AccionMejora, HistorialAccion, Solicitud, HistorialSolicitud, Usuario, EvidenciaArchivo, Recomendacion
+from auth import obtener_usuario_actual, obtener_usuario_para_descarga, requerir_admin, requerir_admin_descarga, verificar_password, crear_token, hashear_password
 from notificaciones import enviar_correo
 from schemas import (
     RegistroCreate, RegistroOut,
     AccionMejoraCreate, AccionMejoraOut, PlanAccionUpdate, VerificacionUpdate, AccionMejoraEdicion,
     SolicitudCreate, SolicitudOut, SolicitudResponder, SolicitudEdicion,
-    LoginRequest, LoginResponse, UsuarioOut, UsuarioCreate, UsuarioEdicion,
+    LoginRequest, GoogleLoginRequest, LoginResponse, UsuarioOut, UsuarioCreate, UsuarioEdicion,
+    RecomendacionOut, LoteAccionesCreate, ObservacionCreate,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -46,31 +52,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-SEED_DATA = [
-    dict(tipo="Incidencia", titulo="Caída del sistema de matrículas", sistema="Matrículas",
-         categoria="Disponibilidad", prioridad="Alta", estado="Resuelto", fecha="2026-08-10"),
-    dict(tipo="Oportunidad de mejora", titulo="Automatizar generación de kardex", sistema="Kardex",
-         categoria="Eficiencia", prioridad="Media", estado="En revisión", fecha="2026-08-12"),
-    dict(tipo="Incidencia", titulo="Error en cálculo de pagos duplicados", sistema="Pagos",
-         categoria="Datos", prioridad="Alta", estado="Nuevo", fecha="2026-08-15"),
-    dict(tipo="Incidencia", titulo="Lentitud al consultar matrícula", sistema="Matrículas",
-         categoria="Rendimiento", prioridad="Media", estado="En revisión", fecha="2026-08-18"),
-    dict(tipo="Oportunidad de mejora", titulo="Notificar por correo cambios en kardex", sistema="Kardex",
-         categoria="Comunicación", prioridad="Baja", estado="Nuevo", fecha="2026-08-19"),
-    dict(tipo="Incidencia", titulo="Correos institucionales rebotando", sistema="Correo institucional",
-         categoria="Disponibilidad", prioridad="Alta", estado="Nuevo", fecha="2026-08-20"),
-]
-
-
-@app.on_event("startup")
-def seed_if_empty():
-    db = next(get_db())
-    if db.query(Registro).count() == 0:
-        for item in SEED_DATA:
-            db.add(Registro(**item))
-        db.commit()
 
 
 # =========================================================================
@@ -88,6 +69,56 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     return LoginResponse(access_token=token, usuario=usuario)
 
 
+# ID de cliente OAuth de Google (Google Cloud Console → Credenciales → ID de cliente OAuth 2.0,
+# tipo "Aplicación web"). Ponerlo como variable de entorno GOOGLE_CLIENT_ID en el servidor.
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID","349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com")
+DOMINIO_PERMITIDO = "unifranz.edu.bo"
+
+
+@app.post("/api/auth/google", response_model=LoginResponse)
+def login_google(data: GoogleLoginRequest, db: Session = Depends(get_db)):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="El login con Google no está configurado en el servidor (falta GOOGLE_CLIENT_ID).")
+    try:
+        payload = google_id_token.verify_oauth2_token(
+            data.credential, google_requests.Request(), GOOGLE_CLIENT_ID
+        )
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Token de Google inválido o vencido")
+
+    correo = (payload.get("email") or "").lower().strip()
+    if not payload.get("email_verified") or not correo.endswith(f"@{DOMINIO_PERMITIDO}"):
+        raise HTTPException(status_code=403, detail=f"Solo se permite el ingreso con correos @{DOMINIO_PERMITIDO}")
+
+    usuario = db.query(Usuario).filter(Usuario.correo == correo).first()
+    if not usuario:
+        # Primer ingreso: se crea la cuenta sola, como Director/a de Carrera sin área todavía.
+        # Sistemas de Gestión le asigna el área desde Usuarios para que empiece a ver sus acciones.
+        usuario = Usuario(
+            nombre_completo=payload.get("name") or correo.split("@")[0],
+            correo=correo,
+            password_hash=hashear_password(uuid.uuid4().hex),  # nunca se usa: solo entra por Google
+            rol="usuario",
+            sede="El Alto",
+            area=None,
+            activo=True,
+        )
+        db.add(usuario)
+        db.commit()
+        db.refresh(usuario)
+        _notificar_admins(
+            db,
+            "Nueva cuenta creada por Google — falta asignarle área",
+            f"{usuario.nombre_completo} ({usuario.correo}) ingresó por primera vez con su correo institucional. "
+            "Asígnale su Área/Carrera en Usuarios para que pueda ver sus Acciones de Mejora.",
+        )
+    elif not usuario.activo:
+        raise HTTPException(status_code=401, detail="Este usuario está desactivado")
+
+    token = crear_token(usuario.correo, usuario.rol, usuario.sede)
+    return LoginResponse(access_token=token, usuario=usuario)
+
+
 @app.get("/api/auth/me", response_model=UsuarioOut)
 def me(usuario: Usuario = Depends(obtener_usuario_actual)):
     return usuario
@@ -100,6 +131,10 @@ def listar_usuarios(db: Session = Depends(get_db), usuario: Usuario = Depends(re
 
 @app.post("/api/usuarios", response_model=UsuarioOut)
 def crear_usuario(data: UsuarioCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+    correo_normalizado = (data.correo or "").strip().lower()
+    if not correo_normalizado.endswith(f"@{DOMINIO_PERMITIDO}"):
+        raise HTTPException(status_code=400, detail=f"El correo debe ser institucional (@{DOMINIO_PERMITIDO}).")
+    data.correo = correo_normalizado
     existente = db.query(Usuario).filter(Usuario.correo == data.correo).first()
     if existente:
         raise HTTPException(status_code=400, detail="Ya existe un usuario con ese correo.")
@@ -109,6 +144,7 @@ def crear_usuario(data: UsuarioCreate, db: Session = Depends(get_db), usuario: U
         password_hash=hashear_password(data.password),
         rol=data.rol,
         sede=data.sede if data.rol == "usuario" else None,
+        area=(data.area or "").strip() or None if data.rol == "usuario" else None,
         activo=True,
     )
     db.add(nuevo)
@@ -144,6 +180,20 @@ def _notificar_usuarios_de_sede(db: Session, sede: Optional[str], asunto: str, m
     destinatarios = db.query(Usuario).filter(Usuario.sede == sede, Usuario.rol == "usuario", Usuario.activo == True).all()
     for u in destinatarios:
         enviar_correo(u.correo, asunto, mensaje)
+
+
+def _norm_area(valor: Optional[str]) -> str:
+    return (valor or "").strip().lower()
+
+
+def _notificar_usuarios_de_area(db: Session, area: Optional[str], asunto: str, mensaje: str):
+    """Manda el correo a los Directores de Carrera activos cuya área/carrera coincide."""
+    if not _norm_area(area):
+        return
+    candidatos = db.query(Usuario).filter(Usuario.rol == "usuario", Usuario.activo == True).all()
+    for u in candidatos:
+        if _norm_area(u.area) == _norm_area(area):
+            enviar_correo(u.correo, asunto, mensaje)
 
 
 def _notificar_admins(db: Session, asunto: str, mensaje: str):
@@ -228,6 +278,14 @@ def _ahora() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+def _verificar_acceso_accion(usuario: Usuario, accion: AccionMejora):
+    """El Director/a solo accede a las acciones de SU área/carrera. El admin ve todo."""
+    if usuario.rol == "admin":
+        return
+    if not _norm_area(usuario.area) or _norm_area(accion.area_responsable) != _norm_area(usuario.area):
+        raise HTTPException(status_code=403, detail="Esta acción no corresponde a tu área.")
+
+
 def _verificar_acceso_sede(usuario: Usuario, sede: Optional[str]):
     """Un usuario (Director/a de Carrera) solo puede acceder a lo de su propia sede. El admin ve todo."""
     if usuario.rol != "admin" and (sede or "") != (usuario.sede or ""):
@@ -239,7 +297,9 @@ def listar_acciones(db: Session = Depends(get_db), usuario: Usuario = Depends(ob
     _revisar_vencidas_y_notificar(db)
     query = db.query(AccionMejora).options(joinedload(AccionMejora.historial))
     if usuario.rol != "admin":
-        query = query.filter(AccionMejora.sede == usuario.sede)
+        if not _norm_area(usuario.area):
+            return []
+        query = query.filter(func.lower(func.trim(AccionMejora.area_responsable)) == _norm_area(usuario.area))
     return query.order_by(AccionMejora.id.desc()).all()
 
 
@@ -468,7 +528,7 @@ def obtener_accion(accion_id: int, db: Session = Depends(get_db), usuario: Usuar
     )
     if not accion:
         raise HTTPException(status_code=404, detail="Acción de Mejora no encontrada")
-    _verificar_acceso_sede(usuario, accion.sede)
+    _verificar_acceso_accion(usuario, accion)
     return accion
 
 
@@ -499,19 +559,24 @@ SEDE_CODIGOS = {
 }
 
 
-def _generar_numero_ac(db: Session, origen: Optional[str], sede: Optional[str]) -> str:
-    origen_code = (origen or "GEN").strip().upper() or "GEN"
-    sede_code = SEDE_CODIGOS.get(sede, (sede or "NA").strip()[:2].upper() or "NA")
+def _generar_numero_ac(db: Session, origen: Optional[str], sede: Optional[str] = None) -> str:
+    """
+    Código correlativo de la Acción de Mejora: AM {FUENTE}-{N}-{AA}, ej. AM BS-14-26.
+    BS = Buzón de Sugerencias. N es el número MÁS ALTO existente + 1 (no una cuenta), y
+    considera tanto los códigos del sistema como los originales importados de Excel.
+    Acepta también el formato viejo con sede (AM BS-EA-12-26) al buscar el último.
+    """
+    origen_code = (origen or "BS").strip().upper() or "BS"
     anio = datetime.now().strftime("%y")
-    prefijo = f"AM {origen_code}-{sede_code}-"
-    sufijo = f"-{anio}"
-    existentes = (
-        db.query(AccionMejora)
-        .filter(AccionMejora.numero.like(f"{prefijo}%{sufijo}"))
-        .count()
-    )
-    secuencial = existentes + 1
-    return f"{prefijo}{secuencial:02d}{sufijo}"
+    patron = re.compile(rf"^AM\s*{re.escape(origen_code)}-(?:[A-Z]{{2}}-)?(\d+)-{anio}$", re.IGNORECASE)
+    maximo = 0
+    for numero, original in db.query(AccionMejora.numero, AccionMejora.numero_ac_original).all():
+        for valor in (numero, original):
+            if valor:
+                m = patron.match(valor.strip())
+                if m:
+                    maximo = max(maximo, int(m.group(1)))
+    return f"AM {origen_code}-{maximo + 1:02d}-{anio}"
 
 
 @app.post("/api/acciones-mejora", response_model=AccionMejoraOut)
@@ -534,11 +599,206 @@ def crear_accion(data: AccionMejoraCreate, db: Session = Depends(get_db), usuari
     _agregar_historial(db, accion, "Registrada")
     db.commit()
     if estado_inicial == "Pendiente Plan de Acción":
-        _notificar_usuarios_de_sede(
-            db, accion.sede,
+        _notificar_usuarios_de_area(
+            db, accion.area_responsable,
             f"Nueva Acción de Mejora asignada — {numero}",
             f"Se registró la Acción de Mejora {numero} y está pendiente de tu plan de acción.\n\nHallazgo: {accion.declaracion_hallazgo}",
         )
+    db.refresh(accion)
+    return accion
+
+
+@app.post("/api/acciones-mejora/lote")
+def crear_lote_acciones(data: LoteAccionesCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+    """
+    Una solicitud del buzón de sugerencias para UN área: crea una Acción de Mejora por cada
+    hallazgo (cada una con su código AM BS-NN-AA correlativo) y guarda las recomendaciones.
+    Al área/carrera le llega UN SOLO correo con todo.
+    """
+    area = (data.area or "").strip()
+    if not area:
+        raise HTTPException(status_code=400, detail="Indica el área o carrera destinataria.")
+    hallazgos = [h.strip() for h in data.hallazgos if h and h.strip()]
+    recomendaciones = [r.strip() for r in data.recomendaciones if r and r.strip()]
+    if not hallazgos and not recomendaciones:
+        raise HTTPException(status_code=400, detail="Agrega al menos una acción de mejora o una recomendación.")
+
+    hay_destinatario = any(
+        _norm_area(u.area) == _norm_area(area)
+        for u in db.query(Usuario).filter(Usuario.rol == "usuario", Usuario.activo == True).all()
+    )
+    if not hay_destinatario:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No hay ningún usuario activo asignado al área '{area}'. Créalo primero en Usuarios.",
+        )
+
+    creadas = []
+    for texto in hallazgos:
+        accion = AccionMejora(
+            numero=_generar_numero_ac(db, "BS"),
+            estado="Pendiente Plan de Acción",
+            fecha_creacion=_ahora(),
+            declaracion_hallazgo=texto,
+            fuente_identificacion="BS",
+            area_responsable=area,
+            solicitante=(data.solicitante or "").strip() or None,
+            plazo_entrega_plan=data.plazo_entrega_plan or None,
+            sede="El Alto",
+        )
+        db.add(accion)
+        db.flush()  # para que el siguiente código correlativo ya cuente este
+        _agregar_historial(db, accion, "Registrada y enviada al área")
+        creadas.append(accion)
+    for texto in recomendaciones:
+        db.add(Recomendacion(area=area, texto=texto, fecha=_ahora(), enviada_por=usuario.nombre_completo))
+    db.commit()
+
+    partes = [f"Sistemas de Gestión te envió una solicitud del Buzón de Sugerencias para el área {area}."]
+    if creadas:
+        partes.append("\nAcciones de Mejora (pendientes de tu plan de acción):")
+        for a in creadas:
+            partes.append(f"  • {a.numero}: {a.declaracion_hallazgo}")
+        if data.plazo_entrega_plan:
+            partes.append(f"\nPlazo para entregar el plan de acción: {data.plazo_entrega_plan}")
+    if recomendaciones:
+        partes.append("\nRecomendaciones (para tu conocimiento):")
+        for r in recomendaciones:
+            partes.append(f"  • {r}")
+    partes.append("\nIngresa al sistema para completar tus acciones.")
+    _notificar_usuarios_de_area(
+        db, area,
+        f"Nueva solicitud del Buzón de Sugerencias — {len(creadas)} acción(es), {len(recomendaciones)} recomendación(es)",
+        "\n".join(partes),
+    )
+    return {
+        "acciones": [{"id": a.id, "numero": a.numero} for a in creadas],
+        "recomendaciones": len(recomendaciones),
+    }
+
+
+@app.get("/api/recomendaciones", response_model=List[RecomendacionOut])
+def listar_recomendaciones(db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+    query = db.query(Recomendacion)
+    if usuario.rol != "admin":
+        if not _norm_area(usuario.area):
+            return []
+        query = query.filter(func.lower(func.trim(Recomendacion.area)) == _norm_area(usuario.area))
+    return query.order_by(Recomendacion.id.desc()).all()
+
+
+@app.get("/api/areas", response_model=List[str])
+def listar_areas(db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+    """Áreas/carreras que ya tienen un usuario activo asignado (para el desplegable de nueva solicitud)."""
+    usuarios = db.query(Usuario).filter(Usuario.rol == "usuario", Usuario.activo == True).all()
+    return sorted({(u.area or "").strip() for u in usuarios if (u.area or "").strip()})
+
+
+@app.post("/api/acciones-mejora/{accion_id}/observacion", response_model=AccionMejoraOut)
+def observar_accion(accion_id: int, data: ObservacionCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+    """La ingeniera deja un comentario para que el área corrija: estado 'Observada' + correo al área."""
+    accion = db.query(AccionMejora).filter(AccionMejora.id == accion_id).first()
+    if not accion:
+        raise HTTPException(status_code=404, detail="Acción de Mejora no encontrada")
+    texto = (data.texto or "").strip()
+    if not texto:
+        raise HTTPException(status_code=400, detail="Escribe el comentario para el área.")
+    if accion.estado == "Cerrada":
+        raise HTTPException(status_code=400, detail="No se puede observar una acción cerrada.")
+
+    accion.estado = "Observada"
+    accion.ultima_observacion = texto
+    db.commit()
+    _agregar_historial(db, accion, f"Observación de Sistemas de Gestión: {texto}")
+    db.commit()
+    _notificar_usuarios_de_area(
+        db, accion.area_responsable,
+        f"Observación en tu Acción de Mejora — {accion.numero}",
+        f"Sistemas de Gestión dejó una observación en la acción {accion.numero}:\n\n{texto}\n\n"
+        "Ingresa al sistema, corrige lo indicado y vuelve a enviar.",
+    )
+    db.refresh(accion)
+    return accion
+
+
+# --- Evidencias (archivos PDF / Excel / fotos) ---
+
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", "evidencias")
+EXTENSIONES_PERMITIDAS = {".pdf", ".xls", ".xlsx", ".csv", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".webp"}
+TAMANO_MAX_BYTES = 15 * 1024 * 1024
+
+
+@app.post("/api/acciones-mejora/{accion_id}/evidencias", response_model=AccionMejoraOut)
+async def subir_evidencia(accion_id: int, archivo: UploadFile = File(...), db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+    accion = db.query(AccionMejora).filter(AccionMejora.id == accion_id).first()
+    if not accion:
+        raise HTTPException(status_code=404, detail="Acción de Mejora no encontrada")
+    _verificar_acceso_accion(usuario, accion)
+    if usuario.rol != "admin" and accion.estado in ("Pendiente Plan de Acción", "Cerrada"):
+        raise HTTPException(status_code=400, detail="Todavía no se puede subir evidencia en esta acción (completa primero el plan de acción).")
+
+    extension = os.path.splitext(archivo.filename or "")[1].lower()
+    if extension not in EXTENSIONES_PERMITIDAS:
+        raise HTTPException(status_code=400, detail="Tipo de archivo no permitido. Usa PDF, Excel, Word o imágenes (JPG/PNG).")
+    contenido = await archivo.read()
+    if len(contenido) > TAMANO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="El archivo supera el máximo de 15 MB.")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    nombre_guardado = f"{uuid.uuid4().hex}{extension}"
+    with open(os.path.join(UPLOAD_DIR, nombre_guardado), "wb") as f:
+        f.write(contenido)
+
+    db.add(EvidenciaArchivo(
+        accion_id=accion.id,
+        nombre_original=os.path.basename(archivo.filename or nombre_guardado),
+        nombre_guardado=nombre_guardado,
+        fecha=_ahora(),
+        subido_por=usuario.nombre_completo,
+    ))
+    db.commit()
+    _agregar_historial(db, accion, f"Evidencia subida: {archivo.filename}")
+    db.commit()
+    if usuario.rol != "admin":
+        _notificar_admins(
+            db,
+            f"Evidencia subida — {accion.numero}",
+            f"{usuario.nombre_completo} subió la evidencia '{archivo.filename}' a la Acción de Mejora {accion.numero}.",
+        )
+    db.refresh(accion)
+    return accion
+
+
+@app.get("/api/evidencias/{evidencia_id}/descargar")
+def descargar_evidencia(evidencia_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_para_descarga)):
+    ev = db.query(EvidenciaArchivo).filter(EvidenciaArchivo.id == evidencia_id).first()
+    if not ev:
+        raise HTTPException(status_code=404, detail="Evidencia no encontrada")
+    accion = db.query(AccionMejora).filter(AccionMejora.id == ev.accion_id).first()
+    _verificar_acceso_accion(usuario, accion)
+    ruta = os.path.join(UPLOAD_DIR, ev.nombre_guardado)
+    if not os.path.exists(ruta):
+        raise HTTPException(status_code=404, detail="El archivo ya no está en el servidor")
+    return FileResponse(ruta, filename=ev.nombre_original)
+
+
+@app.delete("/api/evidencias/{evidencia_id}", response_model=AccionMejoraOut)
+def eliminar_evidencia(evidencia_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+    ev = db.query(EvidenciaArchivo).filter(EvidenciaArchivo.id == evidencia_id).first()
+    if not ev:
+        raise HTTPException(status_code=404, detail="Evidencia no encontrada")
+    accion = db.query(AccionMejora).filter(AccionMejora.id == ev.accion_id).first()
+    _verificar_acceso_accion(usuario, accion)
+    if usuario.rol != "admin" and accion.estado == "Cerrada":
+        raise HTTPException(status_code=400, detail="La acción está cerrada.")
+    ruta = os.path.join(UPLOAD_DIR, ev.nombre_guardado)
+    if os.path.exists(ruta):
+        os.remove(ruta)
+    nombre = ev.nombre_original
+    db.delete(ev)
+    db.commit()
+    _agregar_historial(db, accion, f"Evidencia eliminada: {nombre}")
+    db.commit()
     db.refresh(accion)
     return accion
 
@@ -548,16 +808,22 @@ def completar_plan_accion(accion_id: int, data: PlanAccionUpdate, db: Session = 
     accion = db.query(AccionMejora).filter(AccionMejora.id == accion_id).first()
     if not accion:
         raise HTTPException(status_code=404, detail="Acción de Mejora no encontrada")
-    _verificar_acceso_sede(usuario, accion.sede)
-    if accion.estado != "Pendiente Plan de Acción":
+    _verificar_acceso_accion(usuario, accion)
+    if accion.estado not in ("Pendiente Plan de Acción", "Observada"):
         raise HTTPException(status_code=400, detail="Esta acción no está pendiente de plan de acción")
 
+    era_observada = accion.estado == "Observada"
     for key, value in data.dict(exclude_unset=True).items():
         setattr(accion, key, value)
     accion.fecha_llenado_parte1 = _ahora()
     accion.estado = "Pendiente Verificación"
+    accion.ultima_observacion = None
     db.commit()
-    _agregar_historial(db, accion, "Plan de acción completado por el Área Responsable")
+    _agregar_historial(
+        db, accion,
+        "Plan de acción corregido por el Área Responsable (tras observación)" if era_observada
+        else "Plan de acción completado por el Área Responsable",
+    )
     db.commit()
     _notificar_admins(
         db,
@@ -589,8 +855,8 @@ def _crear_accion_derivada(db: Session, original: AccionMejora) -> AccionMejora:
         f"Creada automáticamente porque la verificación de {original.numero} resultó ineficaz",
     )
     db.commit()
-    _notificar_usuarios_de_sede(
-        db, derivada.sede,
+    _notificar_usuarios_de_area(
+        db, derivada.area_responsable,
         f"Nueva Acción de Mejora (reincidencia) — {derivada.numero}",
         f"Se abrió la Acción de Mejora {derivada.numero} porque {original.numero} no fue eficaz. Completa el plan de acción.",
     )
@@ -644,13 +910,39 @@ def _revisar_vencidas_y_notificar(db: Session):
         if accion.ultima_notificacion_vencimiento == hoy:
             continue
 
-        _notificar_usuarios_de_sede(
-            db, accion.sede,
+        _notificar_usuarios_de_area(
+            db, accion.area_responsable,
             f"Recordatorio: plazo vencido — {accion.numero}",
             f"La Acción de Mejora {accion.numero} debía entregarse el {accion.plazo_entrega_plan} y todavía no se completó el plan de acción.",
         )
         accion.ultima_notificacion_vencimiento = hoy
         _agregar_historial(db, accion, f"Recordatorio automático de vencimiento enviado a {accion.area_responsable or 'Área Responsable'}")
+
+    # Recordatorio de evidencia: llegó el plazo de ejecución y todavía no hay archivos subidos
+    por_evidenciar = (
+        db.query(AccionMejora)
+        .filter(
+            AccionMejora.estado == "Pendiente Verificación",
+            AccionMejora.plazo_ejecucion.isnot(None),
+            AccionMejora.plazo_ejecucion != "",
+        )
+        .all()
+    )
+    for accion in por_evidenciar:
+        try:
+            cumplido = date.fromisoformat(accion.plazo_ejecucion) <= date.today()
+        except ValueError:
+            continue
+        if not cumplido or accion.evidencias or accion.ultima_notificacion_evidencia == hoy:
+            continue
+        _notificar_usuarios_de_area(
+            db, accion.area_responsable,
+            f"Recordatorio: sube tu evidencia — {accion.numero}",
+            f"Se cumplió el plazo de ejecución ({accion.plazo_ejecucion}) de la Acción de Mejora {accion.numero}. "
+            "Ingresa al sistema y sube la evidencia (PDF, Excel o fotos).",
+        )
+        accion.ultima_notificacion_evidencia = hoy
+        _agregar_historial(db, accion, "Recordatorio automático: falta subir la evidencia")
     db.commit()
 
 

@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { ClipboardCheck, ChevronLeft, Download, Upload, Pencil, Eye } from "lucide-react";
 import {
   fetchAcciones,
-  crearAccion,
+  fetchAreas,
+  fetchRecomendaciones,
+  crearLoteAcciones,
+  enviarObservacion,
+  subirEvidencia,
+  eliminarEvidencia,
+  urlDescargarEvidencia,
   completarPlanAccion,
   completarVerificacion,
   urlExportarAcciones,
@@ -13,6 +19,7 @@ import {
 const estadoPill = {
   "Pendiente Plan de Acción": "pill-plan",
   "Pendiente Verificación": "pill-verif",
+  Observada: "pill-nuevo",
   Cerrada: "pill-cerrada",
 };
 
@@ -31,8 +38,10 @@ export default function AccionesMejoraView({
   const [editando, setEditando] = useState(null);
   const [mostrarNueva, setMostrarNueva] = useState(false);
   const [seleccionadas, setSeleccionadas] = useState(new Set());
+  const [recomendaciones, setRecomendaciones] = useState([]);
 
   const cargar = () => {
+    fetchRecomendaciones().then(setRecomendaciones).catch(() => setRecomendaciones([]));
     setLoading(true);
     fetchAcciones()
       .then((data) => {
@@ -83,7 +92,7 @@ export default function AccionesMejoraView({
 
   if (mostrarNueva) {
     return (
-      <NuevaAccionForm
+      <NuevaSolicitudForm
         onCancel={() => setMostrarNueva(false)}
         onCreated={() => {
           setMostrarNueva(false);
@@ -110,7 +119,7 @@ export default function AccionesMejoraView({
 
       {rol === "Sistemas de Gestión (calidad)" && (
         <button className="btn-primary" style={{ marginBottom: 16 }} onClick={() => setMostrarNueva(true)}>
-          + Nueva Acción de Mejora
+          + Nueva solicitud (Buzón de Sugerencias)
         </button>
       )}
 
@@ -121,10 +130,16 @@ export default function AccionesMejoraView({
         </>
       )}
 
+      <RecomendacionesPanel items={recomendaciones} esAdmin={rol === "Sistemas de Gestión (calidad)"} />
+
       {loading && <p className="empty-note">Cargando...</p>}
 
       {!loading && acciones.length === 0 && (
-        <p className="empty-note">Todavía no hay Acciones de Mejora registradas.</p>
+        <p className="empty-note">
+          {rol === "Sistemas de Gestión (calidad)"
+            ? "Todavía no hay Acciones de Mejora registradas."
+            : "No tienes Acciones de Mejora asignadas por ahora."}
+        </p>
       )}
 
       {!loading && acciones.length > 0 && (
@@ -220,36 +235,101 @@ function esVencida(accion) {
   return new Date(plazoRelevante) < new Date();
 }
 
-function NuevaAccionForm({ onCancel, onCreated }) {
-  const [form, setForm] = useState({
-    declaracion_hallazgo: "",
-    fuente_identificacion: "BS",
-    sede: "El Alto",
-    procesos: "",
-    area_responsable: "",
-    solicitante: "",
-    plazo_entrega_plan: "",
-  });
+function RecomendacionesPanel({ items, esAdmin }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <p className="stage-title" style={{ marginTop: 0 }}>Recomendaciones del Buzón de Sugerencias</p>
+      {items.map((r) => (
+        <div className="timeline-item" key={r.id} style={{ alignItems: "flex-start" }}>
+          <span>{r.fecha}</span>
+          <span>—</span>
+          <span>
+            {esAdmin && <b>[{r.area}] </b>}
+            {r.texto}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function NuevaSolicitudForm({ onCancel, onCreated }) {
+  const [areas, setAreas] = useState([]);
+  const [cargandoAreas, setCargandoAreas] = useState(true);
+  const [area, setArea] = useState("");
+  const [plazo, setPlazo] = useState("");
+  const [solicitante, setSolicitante] = useState("");
+  const [hallazgos, setHallazgos] = useState([""]);
+  const [recomendaciones, setRecomendaciones] = useState([]);
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
+  const [resultado, setResultado] = useState(null);
 
-  const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
+  useEffect(() => {
+    fetchAreas()
+      .then((lista) => {
+        setAreas(lista);
+        if (lista.length === 1) setArea(lista[0]);
+      })
+      .catch(() => setError("No se pudieron cargar las áreas"))
+      .finally(() => setCargandoAreas(false));
+  }, []);
+
+  const cambiar = (lista, setLista, i, valor) => setLista(lista.map((x, idx) => (idx === i ? valor : x)));
+  const quitar = (lista, setLista, i) => setLista(lista.filter((_, idx) => idx !== i));
 
   const enviar = async () => {
-    if (!form.declaracion_hallazgo.trim()) {
-      setError("Describe el hallazgo antes de continuar");
+    if (!area) {
+      setError("Elige el área o carrera destinataria");
+      return;
+    }
+    const hs = hallazgos.map((h) => h.trim()).filter(Boolean);
+    const rs = recomendaciones.map((r) => r.trim()).filter(Boolean);
+    if (hs.length === 0 && rs.length === 0) {
+      setError("Agrega al menos una acción de mejora o una recomendación");
       return;
     }
     setEnviando(true);
+    setError("");
     try {
-      await crearAccion(form);
-      onCreated();
+      const r = await crearLoteAcciones({
+        area,
+        plazo_entrega_plan: plazo || null,
+        solicitante: solicitante.trim() || null,
+        hallazgos: hs,
+        recomendaciones: rs,
+      });
+      setResultado(r);
     } catch (e) {
-      setError("No se pudo crear la acción de mejora");
+      setError(e.message || "No se pudo enviar la solicitud");
     } finally {
       setEnviando(false);
     }
   };
+
+  if (resultado) {
+    return (
+      <div className="card">
+        <p className="stage-title" style={{ marginTop: 0 }}>Solicitud enviada a {area}</p>
+        <p style={{ fontSize: 14, lineHeight: 1.6 }}>
+          Se envió <b>un solo correo</b> al área con todo el detalle.
+        </p>
+        {resultado.acciones.length > 0 && (
+          <p style={{ fontSize: 14, lineHeight: 1.6 }}>
+            Acciones de Mejora creadas:{" "}
+            {resultado.acciones.map((a) => (
+              <span key={a.id} className="mono" style={{ marginRight: 10, color: "var(--accent)" }}>{a.numero}</span>
+            ))}
+          </p>
+        )}
+        {resultado.recomendaciones > 0 && (
+          <p style={{ fontSize: 14 }}>Recomendaciones enviadas: {resultado.recomendaciones}</p>
+        )}
+        <button className="btn-primary" onClick={onCreated}>Volver a la lista</button>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -257,48 +337,76 @@ function NuevaAccionForm({ onCancel, onCreated }) {
         <ChevronLeft size={14} style={{ verticalAlign: -2 }} /> Cancelar
       </button>
       <div className="stage-section active-stage">
-        <p className="stage-title">Nueva Acción de Mejora — Encabezado</p>
-        <label className="field-label">Declaración del hallazgo / oportunidad de mejora</label>
-        <textarea
-          className="text-input"
-          rows={6}
-          style={{ marginBottom: 12 }}
-          value={form.declaracion_hallazgo}
-          onChange={set("declaracion_hallazgo")}
-        />
+        <p className="stage-title">Nueva solicitud — Buzón de Sugerencias (BS)</p>
+        <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0 }}>
+          Cada acción de mejora recibe su código correlativo (AM BS-NN-AA). El área recibe todo en un solo correo.
+        </p>
+
         <div className="grid-2">
           <div>
-            <label className="field-label">Fuente de identificación</label>
-            <select className="text-input" value={form.fuente_identificacion} onChange={set("fuente_identificacion")}>
-              <option value="BS">BS — Buzón de Sugerencias</option>
-              <option value="ESE">ESE — Encuesta de Satisfacción Estudiantil</option>
-              <option value="OD">OD — Operación Diaria</option>
-              <option value="AI">AI — Auditoría Interna</option>
+            <label className="field-label">Área / Carrera destinataria</label>
+            <select className="text-input" value={area} onChange={(e) => setArea(e.target.value)} disabled={cargandoAreas}>
+              <option value="">{cargandoAreas ? "Cargando..." : "— Elige un área —"}</option>
+              {areas.map((a) => (
+                <option key={a} value={a}>{a}</option>
+              ))}
             </select>
+            {!cargandoAreas && areas.length === 0 && (
+              <span style={{ fontSize: 12, color: "var(--danger-text)" }}>
+                Aún no hay usuarios con área asignada. Créalos en la pestaña Usuarios.
+              </span>
+            )}
           </div>
           <div>
-            <label className="field-label">Sede</label>
-            <select className="text-input" value={form.sede} onChange={set("sede")}>
-              <option>El Alto</option>
-              <option>Cochabamba</option>
-              <option>Santa Cruz</option>
-              <option>La Paz</option>
-            </select>
+            <label className="field-label">Plazo para entregar el plan de acción</label>
+            <input className="text-input" type="date" value={plazo} onChange={(e) => setPlazo(e.target.value)} />
           </div>
         </div>
-        <div className="grid-2" style={{ marginTop: 12 }}>
-          <div>
-            <label className="field-label">Proceso(s)</label>
-            <input className="text-input" value={form.procesos} onChange={set("procesos")} />
-          </div>
-          <div>
-            <label className="field-label">Área Responsable</label>
-            <input className="text-input" value={form.area_responsable} onChange={set("area_responsable")} />
-          </div>
+
+        <div style={{ marginTop: 12, maxWidth: 420 }}>
+          <label className="field-label">Solicitante (opcional)</label>
+          <input className="text-input" value={solicitante} onChange={(e) => setSolicitante(e.target.value)} />
         </div>
-        <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
+
+        <p className="stage-title" style={{ marginTop: 20 }}>Acciones de mejora</p>
+        {hallazgos.map((h, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "flex-start" }}>
+            <textarea
+              className="text-input"
+              rows={3}
+              placeholder={`Hallazgo / queja ${i + 1}`}
+              value={h}
+              onChange={(e) => cambiar(hallazgos, setHallazgos, i, e.target.value)}
+            />
+            {hallazgos.length > 1 && (
+              <button className="icon-btn" title="Quitar" onClick={() => quitar(hallazgos, setHallazgos, i)}>✕</button>
+            )}
+          </div>
+        ))}
+        <button className="btn-primary" style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--text-primary)" }} onClick={() => setHallazgos([...hallazgos, ""])}>
+          + Agregar otra acción de mejora
+        </button>
+
+        <p className="stage-title" style={{ marginTop: 20 }}>Recomendaciones (solo para conocimiento del área)</p>
+        {recomendaciones.map((r, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "flex-start" }}>
+            <textarea
+              className="text-input"
+              rows={2}
+              placeholder={`Recomendación ${i + 1}`}
+              value={r}
+              onChange={(e) => cambiar(recomendaciones, setRecomendaciones, i, e.target.value)}
+            />
+            <button className="icon-btn" title="Quitar" onClick={() => quitar(recomendaciones, setRecomendaciones, i)}>✕</button>
+          </div>
+        ))}
+        <button className="btn-primary" style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--text-primary)" }} onClick={() => setRecomendaciones([...recomendaciones, ""])}>
+          + Agregar recomendación
+        </button>
+
+        <div style={{ marginTop: 20, display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn-primary" onClick={enviar} disabled={enviando}>
-            {enviando ? "Enviando..." : "Crear Registro"}
+            {enviando ? "Enviando..." : "Enviar solicitud al área"}
           </button>
           {error && <span style={{ fontSize: 13, color: "var(--danger-text)" }}>{error}</span>}
         </div>
@@ -307,7 +415,7 @@ function NuevaAccionForm({ onCancel, onCreated }) {
   );
 }
 
-const ESTADOS_EDICION = ["Pendiente Plan de Acción", "Pendiente Verificación", "Cerrada"];
+const ESTADOS_EDICION = ["Pendiente Plan de Acción", "Observada", "Pendiente Verificación", "Cerrada"];
 
 function EditarRegistroForm({ accion, onCancel, onSaved }) {
   const [form, setForm] = useState({
@@ -427,7 +535,7 @@ function DetalleAccion({ id, rol, onBack }) {
   const codigoOficial = accion.numero_ac_original || accion.numero_accion || accion.numero || `AM BS-EA-${String(accion.id).padStart(2, "0")}-26`;
   const hallazgoTexto = accion.declaracion_hallazgo || accion.hallazgo_asunto || accion.hallazgo || "Sin descripción registrada.";
 
-  const puedeCompletarPlan = rol === "Área Responsable" && accion.estado === "Pendiente Plan de Acción";
+  const puedeCompletarPlan = rol === "Área Responsable" && ["Pendiente Plan de Acción", "Observada"].includes(accion.estado);
   const puedeVerificar = rol === "Sistemas de Gestión (calidad)" && accion.estado === "Pendiente Verificación";
 
   return (
@@ -462,6 +570,20 @@ function DetalleAccion({ id, rol, onBack }) {
         </div>
       </div>
 
+      {accion.estado === "Observada" && accion.ultima_observacion && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "var(--danger-text)" }}>
+          <p className="stage-title" style={{ marginTop: 0, color: "var(--danger-text)" }}>
+            Observación de Sistemas de Gestión
+          </p>
+          <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6 }}>{accion.ultima_observacion}</p>
+          {rol === "Área Responsable" && (
+            <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--text-secondary)" }}>
+              Corrige lo indicado en el formulario de abajo y vuelve a enviarlo.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Plan de Acción — formulario si es tu turno de llenarlo, si no, solo lectura */}
       {puedeCompletarPlan ? (
         <PlanAccionForm accion={accion} onCompletado={onBack} />
@@ -472,11 +594,33 @@ function DetalleAccion({ id, rol, onBack }) {
             {accion.plan_accion || accion.correccion_inmediata || "No se ha registrado un plan de acción formal aún."}
           </div>
 
+          {[
+            ["Informe de investigación", accion.informe_investigacion],
+            ["Análisis de causa raíz", accion.analisis_causa_raiz],
+            ["Corrección inmediata", accion.correccion_inmediata],
+            ["Evidencia que presentará", accion.evidencia_parte1],
+            ["Responsable(s)", accion.responsables],
+          ].map(([titulo, valor]) =>
+            valor ? (
+              <div key={titulo} style={{ marginTop: 10, fontSize: 13, lineHeight: 1.5 }}>
+                <b>{titulo}:</b> {valor}
+              </div>
+            ) : null
+          )}
+
           <div style={{ display: "flex", gap: 24, marginTop: 12, fontSize: 13, color: "var(--text-secondary)" }}>
             <div><b>Plazo de Ejecución:</b> {accion.plazo_ejecucion || accion.plazo_entrega_plan || accion.plazo_plan || "—"}</div>
             <div><b>Fecha de Cierre:</b> {accion.fecha_cierre_plan || accion.fecha_cierre || "—"}</div>
           </div>
         </div>
+      )}
+
+      {(accion.estado !== "Pendiente Plan de Acción" || (accion.evidencias || []).length > 0) && (
+        <EvidenciasCard accion={accion} rol={rol} onCambio={cargar} />
+      )}
+
+      {rol === "Sistemas de Gestión (calidad)" && accion.estado !== "Cerrada" && (
+        <ObservacionCard accion={accion} onEnviada={cargar} />
       )}
 
             {/* Verificación — formulario si es tu turno de cerrarla, si no, solo lectura */}
@@ -515,13 +659,15 @@ function DetalleAccion({ id, rol, onBack }) {
 }
 
 function PlanAccionForm({ accion, onCompletado }) {
+  const observada = accion.estado === "Observada";
   const [form, setForm] = useState({
-    informe_investigacion: "",
-    analisis_causa_raiz: "",
-    correccion_inmediata: "",
-    plan_accion: "",
-    responsables: "",
-    plazo_ejecucion: "",
+    informe_investigacion: accion.informe_investigacion || "",
+    analisis_causa_raiz: accion.analisis_causa_raiz || "",
+    correccion_inmediata: accion.correccion_inmediata || "",
+    plan_accion: accion.plan_accion || "",
+    evidencia_parte1: accion.evidencia_parte1 || "",
+    responsables: accion.responsables || "",
+    plazo_ejecucion: accion.plazo_ejecucion || "",
   });
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
@@ -549,7 +695,9 @@ function PlanAccionForm({ accion, onCompletado }) {
     <div className="card" style={{ marginBottom: 16 }}>
       <p className="stage-title" style={{ marginTop: 0 }}>Plan de Acción — Área Responsable</p>
       <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0, marginBottom: 16 }}>
-        Completa esta sección para enviar el caso a verificación de Sistemas de Gestión.
+        {observada
+          ? "Corrige lo indicado en la observación y vuelve a enviar el caso a verificación."
+          : "Completa esta sección para enviar el caso a verificación de Sistemas de Gestión."}
       </p>
 
       <label className="field-label">Informe de investigación</label>
@@ -564,6 +712,13 @@ function PlanAccionForm({ accion, onCompletado }) {
       <label className="field-label">Plan de acción</label>
       <textarea className="text-input" rows={4} style={{ marginBottom: 12 }} value={form.plan_accion} onChange={set("plan_accion")} />
 
+      <label className="field-label">Evidencia que presentarás</label>
+      <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: "0 0 6px" }}>
+        Describe qué evidencia vas a subir al sistema cuando se cumpla el plazo (ej. acta firmada, fotos, informe en PDF).
+        Los archivos se suben después, desde esta misma acción.
+      </p>
+      <textarea className="text-input" rows={2} style={{ marginBottom: 12 }} value={form.evidencia_parte1} onChange={set("evidencia_parte1")} />
+
       <div className="grid-2">
         <div>
           <label className="field-label">Responsable(s)</label>
@@ -577,7 +732,124 @@ function PlanAccionForm({ accion, onCompletado }) {
 
       <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
         <button className="btn-primary" onClick={enviar} disabled={enviando}>
-          {enviando ? "Enviando..." : "Enviar a verificación"}
+          {enviando ? "Enviando..." : observada ? "Enviar corrección" : "Enviar a verificación"}
+        </button>
+        {error && <span style={{ fontSize: 13, color: "var(--danger-text)" }}>{error}</span>}
+      </div>
+    </div>
+  );
+}
+
+function EvidenciasCard({ accion, rol, onCambio }) {
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState("");
+  const esAdmin = rol === "Sistemas de Gestión (calidad)";
+  const cerrada = accion.estado === "Cerrada";
+  const puedeSubir = esAdmin ? !cerrada : ["Pendiente Verificación", "Observada"].includes(accion.estado);
+  const evidencias = accion.evidencias || [];
+
+  const elegir = async (e) => {
+    const archivo = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setSubiendo(true);
+    setError("");
+    try {
+      await subirEvidencia(accion.id, archivo);
+      onCambio();
+    } catch (err) {
+      setError(err.message || "No se pudo subir el archivo");
+    } finally {
+      setSubiendo(false);
+    }
+  };
+
+  const quitar = async (id) => {
+    if (!window.confirm("¿Eliminar este archivo?")) return;
+    setError("");
+    try {
+      await eliminarEvidencia(id);
+      onCambio();
+    } catch (err) {
+      setError(err.message || "No se pudo eliminar");
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <p className="stage-title" style={{ marginTop: 0 }}>Evidencia</p>
+      <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6, marginBottom: 10 }}>
+        <div><b>Evidencia que se presentará:</b> {accion.evidencia_parte1 || "—"}</div>
+        <div><b>Plazo de ejecución:</b> {accion.plazo_ejecucion || "—"}</div>
+      </div>
+
+      {evidencias.length === 0 ? (
+        <p className="empty-note">Todavía no se subió ningún archivo.</p>
+      ) : (
+        evidencias.map((ev) => (
+          <div className="timeline-item" key={ev.id} style={{ alignItems: "center" }}>
+            <a href={urlDescargarEvidencia(ev.id)} target="_blank" rel="noreferrer" style={{ color: "var(--accent-blue)" }}>
+              {ev.nombre_original}
+            </a>
+            <span>—</span>
+            <span>{ev.fecha}{ev.subido_por ? ` · ${ev.subido_por}` : ""}</span>
+            {(!cerrada || esAdmin) && (
+              <button className="icon-btn" title="Eliminar" onClick={() => quitar(ev.id)} style={{ marginLeft: 8 }}>✕</button>
+            )}
+          </div>
+        ))
+      )}
+
+      {puedeSubir && (
+        <div style={{ marginTop: 12 }}>
+          <label className="field-label">Subir evidencia (PDF, Excel, Word o fotos — máx. 15 MB)</label>
+          <input
+            type="file"
+            accept=".pdf,.xls,.xlsx,.csv,.doc,.docx,.jpg,.jpeg,.png,.webp"
+            onChange={elegir}
+            disabled={subiendo}
+          />
+          {subiendo && <span style={{ fontSize: 13, marginLeft: 8 }}>Subiendo...</span>}
+        </div>
+      )}
+      {error && <p style={{ fontSize: 13, color: "var(--danger-text)", marginBottom: 0 }}>{error}</p>}
+    </div>
+  );
+}
+
+function ObservacionCard({ accion, onEnviada }) {
+  const [texto, setTexto] = useState("");
+  const [error, setError] = useState("");
+  const [enviando, setEnviando] = useState(false);
+
+  const enviar = async () => {
+    if (!texto.trim()) {
+      setError("Escribe el comentario para el área");
+      return;
+    }
+    setEnviando(true);
+    setError("");
+    try {
+      await enviarObservacion(accion.id, texto.trim());
+      setTexto("");
+      onEnviada();
+    } catch (e) {
+      setError(e.message || "No se pudo enviar la observación");
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <p className="stage-title" style={{ marginTop: 0 }}>Observaciones para el área</p>
+      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0 }}>
+        Si el formulario tiene errores, escribe qué debe corregir. La acción pasa a “Observada” y al área le llega un correo con tu comentario.
+      </p>
+      <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={texto} onChange={(e) => setTexto(e.target.value)} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <button className="btn-primary" onClick={enviar} disabled={enviando}>
+          {enviando ? "Enviando..." : "Enviar observación al área"}
         </button>
         {error && <span style={{ fontSize: 13, color: "var(--danger-text)" }}>{error}</span>}
       </div>

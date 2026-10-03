@@ -111,6 +111,39 @@ class AccionMejoraEdicion(BaseModel):
     numero_accion_derivada: Optional[str] = None
 
 
+class EvidenciaOut(BaseModel):
+    id: int
+    nombre_original: str
+    fecha: str
+    subido_por: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RecomendacionOut(BaseModel):
+    id: int
+    area: str
+    texto: str
+    fecha: str
+
+    class Config:
+        from_attributes = True
+
+
+class LoteAccionesCreate(BaseModel):
+    """Una solicitud del buzón de sugerencias: varias acciones de mejora + recomendaciones para UNA misma área."""
+    area: str
+    plazo_entrega_plan: Optional[str] = None
+    solicitante: Optional[str] = None
+    hallazgos: List[str] = []
+    recomendaciones: List[str] = []
+
+
+class ObservacionCreate(BaseModel):
+    texto: str
+
+
 class AccionMejoraOut(BaseModel):
     id: int
     numero: str
@@ -145,6 +178,8 @@ class AccionMejoraOut(BaseModel):
     coordinador_sistemas_gestion: Optional[str] = None
     es_ineficaz: Optional[bool] = False
     numero_accion_derivada: Optional[str] = None
+    ultima_observacion: Optional[str] = None
+    evidencias: List[EvidenciaOut] = []
     historial: List[HistorialOut] = []
 
     class Config:
@@ -217,6 +252,8 @@ class LoginRequest(BaseModel):
     correo: str
     password: str
 
+class GoogleLoginRequest(BaseModel):
+    credential: str
 
 class UsuarioOut(BaseModel):
     id: int
@@ -224,6 +261,7 @@ class UsuarioOut(BaseModel):
     correo: str
     rol: str
     sede: Optional[str] = None
+    area: Optional[str] = None
     activo: bool
 
     class Config:
@@ -241,10 +279,14 @@ class UsuarioCreate(BaseModel):
     password: str
     rol: str  # "admin" | "usuario"
     sede: Optional[str] = None
+    area: Optional[str] = None
 
 
 class UsuarioEdicion(BaseModel):
     nombre_completo: Optional[str] = None
     sede: Optional[str] = None
+    area: Optional[str] = None
     activo: Optional[bool] = None
-    password: Optional[str] = None  # si se manda, resetea la contraseña
+    password: Optional[str] = None  
+
+    

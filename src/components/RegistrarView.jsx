@@ -8,7 +8,6 @@ const ORIGENES = [
   { value: "AI", label: "AI — Auditoría Interna" },
 ];
 
-const SEDES = ["El Alto", "Cochabamba", "Santa Cruz", "La Paz", "Nacional"];
 const ESTADOS = ["Pendiente Plan de Acción", "Pendiente Verificación", "Cerrada"];
 
 const FORM_VACIO = {
@@ -127,23 +126,13 @@ export default function RegistrarView() {
         </div>
       </div>
 
-      <div className="grid-2" style={{ marginBottom: 12 }}>
-        <div>
-          <label className="field-label">Estado</label>
-          <select className="text-input" value={form.estado} onChange={set("estado")}>
-            {ESTADOS.map((e) => (
-              <option key={e}>{e}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label">Sede</label>
-          <select className="text-input" value={form.sede} onChange={set("sede")}>
-            {SEDES.map((s) => (
-              <option key={s}>{s}</option>
-            ))}
-          </select>
-        </div>
+      <div style={{ marginBottom: 12, maxWidth: 320 }}>
+        <label className="field-label">Estado</label>
+        <select className="text-input" value={form.estado} onChange={set("estado")}>
+          {ESTADOS.map((e) => (
+            <option key={e}>{e}</option>
+          ))}
+        </select>
       </div>
 
       <div style={{ marginBottom: 16 }}>

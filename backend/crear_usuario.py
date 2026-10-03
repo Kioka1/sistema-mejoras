@@ -19,10 +19,6 @@ nombre = input("Nombre completo: ").strip()
 correo = input("Correo institucional: ").strip()
 password = input("Contraseña: ").strip()
 
-sede = ""
-if rol == "usuario":
-    sede = input("Sede (El Alto / Cochabamba / Santa Cruz / La Paz): ").strip()
-
 existente = db.query(Usuario).filter(Usuario.correo == correo).first()
 if existente:
     print("Ya existe un usuario con ese correo.")
@@ -32,7 +28,7 @@ else:
         correo=correo,
         password_hash=hashear_password(password),
         rol=rol,
-        sede=sede if rol == "usuario" else None,
+        sede="El Alto" if rol == "usuario" else None,
         activo=True,
     )
     db.add(nuevo)

@@ -79,6 +79,8 @@ class AccionMejora(Base):
     plazo_ejecucion = Column(String, nullable=True)
     fecha_llenado_parte1 = Column(String, nullable=True)
     ultima_notificacion_vencimiento = Column(String, nullable=True)
+    ultima_observacion = Column(Text, nullable=True)      # Comentario pendiente de Sistemas de Gestión (estado "Observada")
+    ultima_notificacion_evidencia = Column(String, nullable=True)
 
     # --- ETAPA 3: Verificación y Cierre (Coordinador de Sistemas de Gestión) ---
     fecha_verificacion = Column(String, nullable=True)
@@ -92,6 +94,32 @@ class AccionMejora(Base):
     numero_accion_derivada = Column(String, nullable=True) # N° Nueva Acción de Mejora vinculada
 
     historial = relationship("HistorialAccion", backref="accion", cascade="all, delete-orphan")
+    evidencias = relationship("EvidenciaArchivo", backref="accion", cascade="all, delete-orphan")
+
+
+class EvidenciaArchivo(Base):
+    """Archivos de evidencia (PDF, Excel, fotos) que sube el Área Responsable."""
+
+    __tablename__ = "evidencias_archivos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    accion_id = Column(Integer, ForeignKey("acciones_mejora.id"), nullable=False)
+    nombre_original = Column(String, nullable=False)
+    nombre_guardado = Column(String, nullable=False)
+    fecha = Column(String, nullable=False)
+    subido_por = Column(String, nullable=True)
+
+
+class Recomendacion(Base):
+    """Recomendaciones del buzón de sugerencias, enviadas junto con las acciones de mejora."""
+
+    __tablename__ = "recomendaciones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    area = Column(String, nullable=False, index=True)
+    texto = Column(Text, nullable=False)
+    fecha = Column(String, nullable=False)
+    enviada_por = Column(String, nullable=True)
 
 
 class HistorialAccion(Base):
@@ -157,6 +185,7 @@ class Usuario(Base):
     password_hash = Column(String, nullable=False)
     rol = Column(String, nullable=False, default="usuario")  # "admin" | "usuario"
     sede = Column(String, nullable=True)  # None para admin (ve todas las sedes)
+    area = Column(String, nullable=True)  # Área/carrera del Director (ej. "ODO"); se usa para asignarle acciones
     activo = Column(Boolean, nullable=False, default=True)
 
 

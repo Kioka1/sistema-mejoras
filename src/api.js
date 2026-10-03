@@ -47,6 +47,23 @@ export async function login(correo, password) {
   guardarSesion(data.access_token, data.usuario);
   return data.usuario;
 }
+// --- Google Auth ---
+export const GOOGLE_CLIENT_ID = "349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com"; 
+
+export async function loginConGoogle(credential) {
+  const res = await fetch(`${API_BASE}/auth/google`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credential }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "No se pudo iniciar sesión con Google");
+  }
+  const data = await res.json();
+  guardarSesion(data.access_token, data.usuario);
+  return data.usuario;
+}
 
 // Wrapper central: agrega el token a cada pedido y cierra sesión si expiró
 async function authFetch(url, options = {}) {
@@ -163,6 +180,66 @@ export async function importarExcelAcciones(archivo) {
     throw new Error(err.detail || "No se pudo importar el archivo");
   }
   return res.json();
+}
+
+// --- Solicitud del Buzón de Sugerencias (lote), recomendaciones, observaciones y evidencias ---
+
+async function errorDe(res, porDefecto) {
+  const err = await res.json().catch(() => ({}));
+  return new Error(err.detail || porDefecto);
+}
+
+export async function crearLoteAcciones(data) {
+  const res = await authFetch(`${API_BASE}/acciones-mejora/lote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw await errorDe(res, "No se pudo enviar la solicitud");
+  return res.json();
+}
+
+export async function fetchAreas() {
+  const res = await authFetch(`${API_BASE}/areas`);
+  if (!res.ok) throw new Error("No se pudo cargar las áreas");
+  return res.json();
+}
+
+export async function fetchRecomendaciones() {
+  const res = await authFetch(`${API_BASE}/recomendaciones`);
+  if (!res.ok) throw new Error("No se pudo cargar las recomendaciones");
+  return res.json();
+}
+
+export async function enviarObservacion(id, texto) {
+  const res = await authFetch(`${API_BASE}/acciones-mejora/${id}/observacion`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ texto }),
+  });
+  if (!res.ok) throw await errorDe(res, "No se pudo enviar la observación");
+  return res.json();
+}
+
+export async function subirEvidencia(id, archivo) {
+  const formData = new FormData();
+  formData.append("archivo", archivo);
+  const res = await authFetch(`${API_BASE}/acciones-mejora/${id}/evidencias`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw await errorDe(res, "No se pudo subir la evidencia");
+  return res.json();
+}
+
+export async function eliminarEvidencia(evidenciaId) {
+  const res = await authFetch(`${API_BASE}/evidencias/${evidenciaId}`, { method: "DELETE" });
+  if (!res.ok) throw await errorDe(res, "No se pudo eliminar la evidencia");
+  return res.json();
+}
+
+export function urlDescargarEvidencia(evidenciaId) {
+  return `${API_BASE}/evidencias/${evidenciaId}/descargar?token=${encodeURIComponent(getToken() || "")}`;
 }
 
 // --- Solicitudes (módulo independiente) ---

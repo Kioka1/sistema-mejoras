@@ -11,7 +11,7 @@ import {
   Cell,
   Legend,
 } from "recharts";
-import { fetchAcciones, fetchRegistros, fetchSolicitudes } from "../api.js";
+import { fetchAcciones } from "../api.js";
 
 const PALETA_COLORES = [
   "#e8672f",
@@ -26,90 +26,48 @@ const PALETA_COLORES = [
 const ESTADO_MAP = {
   "Pendiente Plan de Acción": "#e8672f",
   "Pendiente Verificación": "#f0b429",
+  Observada: "#f0625f",
   Cerrada: "#4ade9a",
-  Pendiente: "#e8672f",
-  "En revisión": "#f0b429",
-  Resuelto: "#4ade9a",
-  Respondida: "#3b82c4",
-  Nuevo: "#a855f7",
 };
 
 export default function PanelView() {
   const [metrics, setMetrics] = useState({
     total: 0,
-    incidencias: 0,
-    mejoras: 0,
-    pendientes: 0,
-    porSistema: [],
+    pendientesPlan: 0,
+    enVerificacion: 0,
+    cerradas: 0,
+    porArea: [],
     porEstado: [],
   });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    async function cargarDatosReales() {
+    async function cargarDatos() {
       setLoading(true);
       try {
-        const [accionesData, registrosData, solicitudesData] = await Promise.allSettled([
-          fetchAcciones(),
-          fetchRegistros ? fetchRegistros() : Promise.resolve([]),
-          fetchSolicitudes ? fetchSolicitudes() : Promise.resolve([]),
-        ]);
+        const data = await fetchAcciones();
+        const acciones = Array.isArray(data) ? data : [];
 
-        const acciones = accionesData.status === "fulfilled" && Array.isArray(accionesData.value) ? accionesData.value : [];
-        const registros = registrosData.status === "fulfilled" && Array.isArray(registrosData.value) ? registrosData.value : [];
-        const solicitudes = solicitudesData.status === "fulfilled" && Array.isArray(solicitudesData.value) ? solicitudesData.value : [];
+        const contar = (fn) => acciones.filter(fn).length;
+        const agrupar = (clave) => {
+          const mapa = {};
+          acciones.forEach((a) => {
+            const k = clave(a);
+            mapa[k] = (mapa[k] || 0) + 1;
+          });
+          return mapa;
+        };
 
-        const totalMejoras = acciones.length;
-        const totalIncidencias = registros.length + solicitudes.length;
-        const totalRegistros = totalMejoras + totalIncidencias;
-
-        const pendientesAcciones = acciones.filter((a) => a.estado !== "Cerrada").length;
-        const pendientesRegistros = registros.filter((r) => r.estado && !["Resuelto", "Cerrado", "Cerrada"].includes(r.estado)).length;
-        const pendientesSolicitudes = solicitudes.filter((s) => s.estado && !["Resuelto", "Cerrado", "Cerrada"].includes(s.estado)).length;
-        const totalPendientes = pendientesAcciones + pendientesRegistros + pendientesSolicitudes;
-
-        // Distribución por Sistema / Proceso
-        const sistemasMap = {};
-
-        acciones.forEach((a) => {
-          const sistema = a.procesos || a.area_responsable || "SGC / Gestión";
-          sistemasMap[sistema] = (sistemasMap[sistema] || 0) + 1;
-        });
-
-        registros.forEach((r) => {
-          const sistema = r.sistema || r.proceso || "Operación";
-          sistemasMap[sistema] = (sistemasMap[sistema] || 0) + 1;
-        });
-
-        solicitudes.forEach((s) => {
-          const sistema = s.sistema || s.modulo || "Atención";
-          sistemasMap[sistema] = (sistemasMap[sistema] || 0) + 1;
-        });
-
-        const porSistema = Object.keys(sistemasMap).map((key) => ({
-          sistema: key,
-          cantidad: sistemasMap[key],
-        }));
-
-        // Distribución por Estado
-        const estadosMap = {};
-        [...acciones, ...registros, ...solicitudes].forEach((item) => {
-          const estado = item.estado || "Pendiente";
-          estadosMap[estado] = (estadosMap[estado] || 0) + 1;
-        });
-
-        const porEstado = Object.keys(estadosMap).map((key) => ({
-          estado: key,
-          cantidad: estadosMap[key],
-        }));
+        const porAreaMapa = agrupar((a) => (a.area_responsable || a.procesos || "Sin área").trim());
+        const porEstadoMapa = agrupar((a) => a.estado || "Pendiente Plan de Acción");
 
         setMetrics({
-          total: totalRegistros,
-          incidencias: totalIncidencias,
-          mejoras: totalMejoras,
-          pendientes: totalPendientes,
-          porSistema,
-          porEstado,
+          total: acciones.length,
+          pendientesPlan: contar((a) => ["Pendiente Plan de Acción", "Observada"].includes(a.estado)),
+          enVerificacion: contar((a) => a.estado === "Pendiente Verificación"),
+          cerradas: contar((a) => a.estado === "Cerrada"),
+          porArea: Object.keys(porAreaMapa).map((k) => ({ sistema: k, cantidad: porAreaMapa[k] })),
+          porEstado: Object.keys(porEstadoMapa).map((k) => ({ estado: k, cantidad: porEstadoMapa[k] })),
         });
       } catch (e) {
         console.error("Error al procesar indicadores:", e);
@@ -118,7 +76,7 @@ export default function PanelView() {
       }
     }
 
-    cargarDatosReales();
+    cargarDatos();
   }, []);
 
   if (loading) return <p className="empty-note">Cargando indicadores en tiempo real...</p>;
@@ -128,30 +86,30 @@ export default function PanelView() {
       <div className="metrics-row">
         <div className="metric-card">
           <div className="num">{metrics.total}</div>
-          <div className="lbl">Total registros</div>
+          <div className="lbl">Total acciones</div>
         </div>
         <div className="metric-card">
-          <div className="num">{metrics.incidencias}</div>
-          <div className="lbl">Incidencias</div>
+          <div className="num">{metrics.pendientesPlan}</div>
+          <div className="lbl">Pendientes de plan</div>
         </div>
         <div className="metric-card">
-          <div className="num">{metrics.mejoras}</div>
-          <div className="lbl">Mejoras</div>
+          <div className="num">{metrics.enVerificacion}</div>
+          <div className="lbl">En verificación</div>
         </div>
         <div className="metric-card">
-          <div className="num">{metrics.pendientes}</div>
-          <div className="lbl">Pendientes</div>
+          <div className="num">{metrics.cerradas}</div>
+          <div className="lbl">Cerradas</div>
         </div>
       </div>
 
       <div className="charts-grid">
         <div className="chart-card">
-          <p className="chart-title" style={{ color: "var(--text-primary)", fontWeight: 600, marginBottom: "16px" }}>Registros por sistema / proceso</p>
-          {metrics.porSistema.length === 0 ? (
+          <p className="chart-title" style={{ color: "var(--text-primary)", fontWeight: 600, marginBottom: "16px" }}>Acciones por área / proceso</p>
+          {metrics.porArea.length === 0 ? (
             <p className="empty-note">No hay datos disponibles</p>
           ) : (
             <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={metrics.porSistema}>
+              <BarChart data={metrics.porArea}>
                 <XAxis dataKey="sistema" tick={{ fontSize: 11, fill: "#9aa4b5" }} axisLine={{ stroke: "#2a3444" }} tickLine={false} />
                 <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#9aa4b5" }} axisLine={{ stroke: "#2a3444" }} tickLine={false} />
                 <Tooltip
@@ -165,7 +123,7 @@ export default function PanelView() {
         </div>
 
         <div className="chart-card">
-          <p className="chart-title" style={{ color: "var(--text-primary)", fontWeight: 600, marginBottom: "16px" }}>Registros por estado</p>
+          <p className="chart-title" style={{ color: "var(--text-primary)", fontWeight: 600, marginBottom: "16px" }}>Acciones por estado</p>
           {metrics.porEstado.length === 0 ? (
             <p className="empty-note">No hay datos disponibles</p>
           ) : (

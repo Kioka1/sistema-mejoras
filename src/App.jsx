@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
-import { Search, FilePlus2, Upload, BarChart3, ClipboardCheck, Send, LogOut, Users } from "lucide-react";
-import { fetchRegistros, getToken, getUsuarioGuardado, cerrarSesion } from "./api.js";
+import { Search, FilePlus2, Upload, BarChart3, ClipboardCheck, LogOut, Users } from "lucide-react";
+import { fetchAcciones, getToken, getUsuarioGuardado, cerrarSesion } from "./api.js";
 import LoginView from "./components/LoginView.jsx";
 import BuscarView from "./components/BuscarView.jsx";
 import RegistrarView from "./components/RegistrarView.jsx";
 import CargarView from "./components/CargarView.jsx";
 import PanelView from "./components/PanelView.jsx";
 import AccionesMejoraView from "./components/AccionesMejoraView.jsx";
-import SolicitudesView from "./components/SolicitudesView.jsx";
 import UsuariosView from "./components/UsuariosView.jsx";
 
 
@@ -15,12 +14,14 @@ const TABS = [
   { key: "buscar", label: "Buscar", icon: Search },
   { key: "registrar", label: "Registrar", icon: FilePlus2 },
   { key: "acciones", label: "Acciones de Mejora", icon: ClipboardCheck },
-  { key: "solicitudes", label: "Solicitudes", icon: Send },
   { key: "cargar", label: "Cargar datos", icon: Upload },
   { key: "panel", label: "Panel", icon: BarChart3 },
 ];
 
 const TAB_USUARIOS = { key: "usuarios", label: "Usuarios", icon: Users };
+
+// Los Directores/as de Carrera no registran ni cargan datos: solo ven sus acciones.
+const TABS_SOLO_ADMIN = ["registrar", "cargar"];
 
 export default function App() {
   const [usuario, setUsuario] = useState(() => (getToken() ? getUsuarioGuardado() : null));
@@ -34,7 +35,7 @@ export default function App() {
 
   const loadData = () => {
     setLoading(true);
-    fetchRegistros()
+    fetchAcciones()
       .then((r) => {
         setData(r);
         setError("");
@@ -77,7 +78,10 @@ export default function App() {
     .map((p) => p[0].toUpperCase())
     .join("");
 
-  const tabsVisibles = usuario.rol === "admin" ? [...TABS, TAB_USUARIOS] : TABS;
+  const tabsVisibles =
+    usuario.rol === "admin"
+      ? [...TABS, TAB_USUARIOS]
+      : TABS.filter((t) => !TABS_SOLO_ADMIN.includes(t.key));
 
   return (
     <div className="layout">
@@ -156,7 +160,6 @@ export default function App() {
                   }}
                 />
               )}
-              {tab === "solicitudes" && <SolicitudesView usuario={usuario} />}
               {tab === "cargar" && <CargarView />}
               {tab === "panel" && <PanelView />}
               {tab === "usuarios" && <UsuariosView />}
