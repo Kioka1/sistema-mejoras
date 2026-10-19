@@ -56,13 +56,36 @@ class AccionMejoraCreate(BaseModel):
     observacion: Optional[str] = None
     numero_ac_original: Optional[str] = None
     estado: Optional[str] = None
+    # Áreas responsables (puede ser más de una). Si no se envía, se usa area_responsable.
+    areas: Optional[List[str]] = None
+    # Plazo para que el área entregue el plan: 7 o 14 días desde hoy (lo elige Sistemas de Gestión).
+    plazo_dias: Optional[int] = None
+
+
+class PlanItemIn(BaseModel):
+    """Una acción del plan con la evidencia que se presentará por ella."""
+    accion: str
+    evidencia: Optional[str] = None
+
+
+class PlanItemOut(BaseModel):
+    id: int
+    orden: int
+    accion_texto: str
+    evidencia: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
 class PlanAccionUpdate(BaseModel):
-    """Etapa 2: Llenado por el Área Responsable."""
+    """Primera Parte: llenado por el Área Responsable."""
     informe_investigacion: Optional[str] = None
     analisis_causa_raiz: Optional[str] = None
     correccion_inmediata: Optional[str] = None
+    # Formato nuevo: una o más acciones, cada una con su evidencia
+    acciones: Optional[List[PlanItemIn]] = None
+    # Formato anterior (texto único); se sigue aceptando
     plan_accion: Optional[str] = None
     evidencia_parte1: Optional[str] = None
     responsables: Optional[str] = None
@@ -109,6 +132,7 @@ class AccionMejoraEdicion(BaseModel):
     coordinador_sistemas_gestion: Optional[str] = None
     es_ineficaz: Optional[bool] = None
     numero_accion_derivada: Optional[str] = None
+    areas: Optional[List[str]] = None
 
 
 class EvidenciaOut(BaseModel):
@@ -133,8 +157,10 @@ class RecomendacionOut(BaseModel):
 
 class LoteAccionesCreate(BaseModel):
     """Una solicitud del buzón de sugerencias: varias acciones de mejora + recomendaciones para UNA misma área."""
-    area: str
+    area: Optional[str] = None          # formato anterior (una sola área)
+    areas: List[str] = []               # una o varias áreas destinatarias
     plazo_entrega_plan: Optional[str] = None
+    plazo_dias: Optional[int] = None    # 7 o 14 días desde hoy
     solicitante: Optional[str] = None
     hallazgos: List[str] = []
     recomendaciones: List[str] = []
@@ -179,6 +205,8 @@ class AccionMejoraOut(BaseModel):
     es_ineficaz: Optional[bool] = False
     numero_accion_derivada: Optional[str] = None
     ultima_observacion: Optional[str] = None
+    areas: List[str] = []
+    plan_items: List[PlanItemOut] = []
     evidencias: List[EvidenciaOut] = []
     historial: List[HistorialOut] = []
 
@@ -262,6 +290,7 @@ class UsuarioOut(BaseModel):
     rol: str
     sede: Optional[str] = None
     area: Optional[str] = None
+    areas: List[str] = []
     activo: bool
 
     class Config:
@@ -279,14 +308,20 @@ class UsuarioCreate(BaseModel):
     password: str
     rol: str  # "admin" | "usuario"
     sede: Optional[str] = None
-    area: Optional[str] = None
+    area: Optional[str] = None          # formato anterior
+    areas: List[str] = []               # una o varias áreas
 
 
 class UsuarioEdicion(BaseModel):
     nombre_completo: Optional[str] = None
     sede: Optional[str] = None
-    area: Optional[str] = None
+    area: Optional[str] = None          # formato anterior
+    areas: Optional[List[str]] = None   # una o varias áreas
     activo: Optional[bool] = None
-    password: Optional[str] = None  
+    password: Optional[str] = None
+
+
+class AreaCreate(BaseModel):
+    nombre: str  
 
     

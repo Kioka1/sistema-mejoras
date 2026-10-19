@@ -25,6 +25,8 @@ const PALETA_COLORES = [
 
 const ESTADO_MAP = {
   "Pendiente Plan de Acción": "#e8672f",
+  "En ejecución": "#6366f1",
+  "Pendiente de evidencia": "#fb923c",
   "Pendiente Verificación": "#f0b429",
   Observada: "#f0625f",
   Cerrada: "#4ade9a",
@@ -34,6 +36,7 @@ export default function PanelView() {
   const [metrics, setMetrics] = useState({
     total: 0,
     pendientesPlan: 0,
+    enEjecucion: 0,
     enVerificacion: 0,
     cerradas: 0,
     porArea: [],
@@ -58,12 +61,20 @@ export default function PanelView() {
           return mapa;
         };
 
-        const porAreaMapa = agrupar((a) => (a.area_responsable || a.procesos || "Sin área").trim());
+        // Una acción con varias áreas cuenta una vez en cada área
+        const porAreaMapa = {};
+        acciones.forEach((a) => {
+          const lista = Array.isArray(a.areas) && a.areas.length ? a.areas : [(a.area_responsable || a.procesos || "Sin área").trim()];
+          lista.forEach((k) => {
+            porAreaMapa[k] = (porAreaMapa[k] || 0) + 1;
+          });
+        });
         const porEstadoMapa = agrupar((a) => a.estado || "Pendiente Plan de Acción");
 
         setMetrics({
           total: acciones.length,
           pendientesPlan: contar((a) => ["Pendiente Plan de Acción", "Observada"].includes(a.estado)),
+          enEjecucion: contar((a) => ["En ejecución", "Pendiente de evidencia"].includes(a.estado)),
           enVerificacion: contar((a) => a.estado === "Pendiente Verificación"),
           cerradas: contar((a) => a.estado === "Cerrada"),
           porArea: Object.keys(porAreaMapa).map((k) => ({ sistema: k, cantidad: porAreaMapa[k] })),
@@ -91,6 +102,10 @@ export default function PanelView() {
         <div className="metric-card">
           <div className="num">{metrics.pendientesPlan}</div>
           <div className="lbl">Pendientes de plan</div>
+        </div>
+        <div className="metric-card">
+          <div className="num">{metrics.enEjecucion}</div>
+          <div className="lbl">En ejecución / evidencia</div>
         </div>
         <div className="metric-card">
           <div className="num">{metrics.enVerificacion}</div>

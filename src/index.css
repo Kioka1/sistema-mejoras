@@ -1,14 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Con preflight desactivado, "border" de Tailwind necesita esto para verse */
+@layer base {
+  [class*="border"] {
+    border-width: 0;
+    border-style: solid;
+  }
+}
+
 :root {
-  --bg-outer: #0e1520;
-  --bg-panel: #18212f;
-  --bg-panel-alt: #1e2837;
-  --sidebar-bg: #151d29;
+  --bg-outer: #080c15;
+  --bg-panel: #121b2f;
+  --bg-panel-alt: #16223b;
+  --sidebar-bg: #0a0f1a;
   --border: #2a3444;
-  --border-soft: #232d3c;
+  --border-soft: rgba(255, 255, 255, 0.07);
   --text-primary: #eef1f6;
   --text-secondary: #9aa4b5;
   --text-muted: #7a869c;
-  --accent: #e8672f;
+  --accent: #f97316;
   --accent-blue: #3b82c4;
   --success-bg: #16342a;
   --success-text: #4ade9a;
@@ -17,10 +29,12 @@
   --danger-bg: #3a1a1a;
   --danger-text: #f0625f;
   --radius: 10px;
-  --font: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 
 * { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
 
 body {
   margin: 0;
@@ -31,6 +45,12 @@ body {
 
 button { font-family: var(--font); cursor: pointer; }
 input, select, textarea { font-family: var(--font); font-size: 14px; }
+
+/* Scrollbar discreta (diseño nuevo) */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #080c15; }
+::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: #334155; }
 
 .layout {
   display: flex;

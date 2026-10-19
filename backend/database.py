@@ -3,9 +3,10 @@ Configuración de la base de datos — PostgreSQL.
 Sistematización de Acciones de Mejora (CAPA) y Solicitudes.
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, Boolean, Table, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import os
+import re
 
 # --- Configuración de PostgreSQL ---
 PG_USER = os.environ.get("DB_USER", "postgres")
@@ -14,11 +15,43 @@ PG_HOST = os.environ.get("DB_HOST", "localhost")
 PG_PORT = os.environ.get("DB_PORT", "5432")
 PG_NAME = os.environ.get("DB_NAME", "sistema_mejoras")
 
-DATABASE_URL = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_NAME}"
+# DATABASE_URL completa (opcional): útil para pruebas, ej. sqlite:///prueba.db
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_NAME}",
+)
 
-engine = create_engine(DATABASE_URL)
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=_connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+# --- Áreas / Carreras (un usuario puede tener varias; una acción puede ser de varias) ---
+
+usuario_areas = Table(
+    "usuario_areas",
+    Base.metadata,
+    Column("usuario_id", Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), primary_key=True),
+    Column("area_id", Integer, ForeignKey("areas.id", ondelete="CASCADE"), primary_key=True),
+)
+
+accion_areas = Table(
+    "accion_areas",
+    Base.metadata,
+    Column("accion_id", Integer, ForeignKey("acciones_mejora.id", ondelete="CASCADE"), primary_key=True),
+    Column("area_id", Integer, ForeignKey("areas.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Area(Base):
+    """Catálogo de áreas/carreras (ej. ODO, DAF, TI). Se administra desde Usuarios."""
+
+    __tablename__ = "areas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String, nullable=False, unique=True, index=True)
+    activa = Column(Boolean, nullable=False, default=True)
 
 
 class Registro(Base):
@@ -95,6 +128,32 @@ class AccionMejora(Base):
 
     historial = relationship("HistorialAccion", backref="accion", cascade="all, delete-orphan")
     evidencias = relationship("EvidenciaArchivo", backref="accion", cascade="all, delete-orphan")
+    # Primera Parte: lista de acciones del plan, cada una con su evidencia prevista
+    plan_items = relationship(
+        "PlanAccionItem",
+        backref="accion",
+        cascade="all, delete-orphan",
+        order_by="PlanAccionItem.orden",
+        lazy="selectin",
+    )
+    # Áreas responsables (puede ser más de una)
+    areas_rel = relationship("Area", secondary=accion_areas, lazy="selectin")
+
+    @property
+    def areas(self):
+        return sorted(a.nombre for a in self.areas_rel)
+
+
+class PlanAccionItem(Base):
+    """Una acción del Plan de Acción (Primera Parte) con la evidencia que se presentará por ella."""
+
+    __tablename__ = "plan_accion_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    accion_id = Column(Integer, ForeignKey("acciones_mejora.id"), nullable=False, index=True)
+    orden = Column(Integer, nullable=False, default=0)
+    accion_texto = Column(Text, nullable=False)
+    evidencia = Column(Text, nullable=True)
 
 
 class EvidenciaArchivo(Base):
@@ -187,6 +246,63 @@ class Usuario(Base):
     sede = Column(String, nullable=True)  # None para admin (ve todas las sedes)
     area = Column(String, nullable=True)  # Área/carrera del Director (ej. "ODO"); se usa para asignarle acciones
     activo = Column(Boolean, nullable=False, default=True)
+
+    # Áreas del Director/a (puede tener varias). La columna "area" de arriba queda como
+    # texto de apoyo: se mantiene igual a las áreas unidas con " / ".
+    areas_rel = relationship("Area", secondary=usuario_areas, lazy="selectin")
+
+    @property
+    def areas(self):
+        return sorted(a.nombre for a in self.areas_rel)
+
+
+# --- Utilidades de áreas ---
+
+def norm_area(valor):
+    return (valor or "").strip().lower()
+
+
+def parse_areas(texto):
+    """'ODO / DAF', 'ODO; DAF' o 'ODO, DAF' -> ['ODO', 'DAF'] (sin repetidos)."""
+    if not texto:
+        return []
+    vistos, salida = set(), []
+    for parte in re.split(r"\s*[;,]\s*|\s+/\s+", str(texto)):
+        nombre = parte.strip()
+        if nombre and norm_area(nombre) not in vistos:
+            vistos.add(norm_area(nombre))
+            salida.append(nombre)
+    return salida
+
+
+def obtener_o_crear_area(db, nombre):
+    """Busca el área por nombre (sin importar mayúsculas/espacios); si no existe, la crea."""
+    nombre = (nombre or "").strip()
+    if not nombre:
+        return None
+    area = db.query(Area).filter(func.lower(func.trim(Area.nombre)) == norm_area(nombre)).first()
+    if not area:
+        area = Area(nombre=nombre, activa=True)
+        db.add(area)
+        db.flush()
+    return area
+
+
+def asignar_areas(db, objeto, nombres):
+    """Deja al usuario o a la acción con exactamente esas áreas y sincroniza su texto de apoyo."""
+    areas, ids = [], set()
+    for n in nombres or []:
+        a = obtener_o_crear_area(db, n)
+        if a and a.id not in ids:
+            ids.add(a.id)
+            areas.append(a)
+    objeto.areas_rel = areas
+    texto = " / ".join(sorted(a.nombre for a in areas)) or None
+    if isinstance(objeto, Usuario):
+        objeto.area = texto
+    else:
+        objeto.area_responsable = texto
+    return areas
 
 
 def get_db():
