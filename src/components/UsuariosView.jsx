@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, UserPlus, Pencil } from "lucide-react";
 import { fetchUsuarios, crearUsuario, editarUsuario } from "../api.js";
+import AreasSelector from "./AreasSelector.jsx";
 
 export default function UsuariosView() {
   const [usuarios, setUsuarios] = useState([]);
@@ -64,7 +65,7 @@ export default function UsuariosView() {
         <col style={{ width: 140 }} />
         <col style={{ width: 280 }} />
         <col style={{ width: 110 }} />
-        <col style={{ width: 120 }} />
+        <col style={{ width: 200 }} />
         <col style={{ width: 120 }} />
         <col style={{ width: 50 }} />
       </colgroup>
@@ -73,7 +74,7 @@ export default function UsuariosView() {
           <th>Nombre</th>
           <th>Correo</th>
           <th>Rol</th>
-          <th>Área / Carrera</th>
+          <th>Áreas / Carreras</th>
           <th>Estado</th>
           <th className="col-actions"></th>
         </tr>
@@ -99,7 +100,13 @@ export default function UsuariosView() {
                 {u.rol === "admin" ? "Admin" : "Usuario"}
               </span>
             </td>
-            <td>{u.rol === "usuario" ? u.area || "— sin área —" : "—"}</td>
+            <td>
+              {u.rol !== "usuario"
+                ? "—"
+                : (u.areas || []).length > 0
+                ? (u.areas || []).join(" · ")
+                : "— sin área —"}
+            </td>
             <td>
               <span
                 className={`pill ${
@@ -135,7 +142,7 @@ function NuevoUsuarioForm({ onCancel, onCreated }) {
     password: "",
     rol: "usuario",
     sede: "El Alto",
-    area: "",
+    areas: [],
   });
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
@@ -147,8 +154,8 @@ function NuevoUsuarioForm({ onCancel, onCreated }) {
       setError("Completa nombre, correo y contraseña");
       return;
     }
-    if (form.rol === "usuario" && !form.area.trim()) {
-      setError("Indica el área o carrera del usuario");
+    if (form.rol === "usuario" && form.areas.length === 0) {
+      setError("Elige al menos un área o carrera para el usuario");
       return;
     }
     setEnviando(true);
@@ -197,14 +204,12 @@ function NuevoUsuarioForm({ onCancel, onCreated }) {
         </div>
 
         {form.rol === "usuario" && (
-          <div style={{ marginTop: 12, maxWidth: 420 }}>
-            <label className="field-label">Área / Carrera (ej. ODO)</label>
-            <input
-              className="text-input"
-              value={form.area}
-              onChange={set("area")}
-              placeholder="Las acciones de esta área le llegarán a este usuario"
-            />
+          <div style={{ marginTop: 12 }}>
+            <label className="field-label">Áreas / Carreras (puede tener más de una)</label>
+            <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: "0 0 8px" }}>
+              Verá las acciones de todas sus áreas y recibirá los correos de cada una.
+            </p>
+            <AreasSelector value={form.areas} onChange={(areas) => setForm({ ...form, areas })} />
           </div>
         )}
 
@@ -223,7 +228,7 @@ function EditarUsuarioForm({ usuario, onCancel, onSaved }) {
   const [form, setForm] = useState({
     nombre_completo: usuario.nombre_completo,
     sede: usuario.sede || "El Alto",
-    area: usuario.area || "",
+    areas: usuario.areas || [],
     // Normalizar: true solo si es explícitamente activo
     activo: usuario.activo === true || usuario.activo === 1 || usuario.activo === "1",
     password: "",
@@ -240,7 +245,7 @@ function EditarUsuarioForm({ usuario, onCancel, onSaved }) {
       const cambios = {
         nombre_completo: form.nombre_completo,
         sede: usuario.rol === "usuario" ? form.sede : null,
-        area: usuario.rol === "usuario" ? form.area.trim() : null,
+        areas: usuario.rol === "usuario" ? form.areas : [],
         activo: Boolean(form.activo), // siempre boolean true/false
       };
       if (form.password.trim()) cambios.password = form.password.trim();
@@ -269,9 +274,9 @@ function EditarUsuarioForm({ usuario, onCancel, onSaved }) {
         </div>
 
         {usuario.rol === "usuario" && (
-          <div style={{ marginTop: 12, maxWidth: 420 }}>
-            <label className="field-label">Área / Carrera</label>
-            <input className="text-input" value={form.area} onChange={set("area")} />
+          <div style={{ marginTop: 12 }}>
+            <label className="field-label">Áreas / Carreras (puede tener más de una)</label>
+            <AreasSelector value={form.areas} onChange={(areas) => setForm({ ...form, areas })} />
           </div>
         )}
 

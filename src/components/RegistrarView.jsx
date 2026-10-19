@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { crearAccion } from "../api.js";
+import AreasSelector from "./AreasSelector.jsx";
 
 const ORIGENES = [
   { value: "BS", label: "BS — Buzón de Sugerencias" },
@@ -8,7 +9,7 @@ const ORIGENES = [
   { value: "AI", label: "AI — Auditoría Interna" },
 ];
 
-const ESTADOS = ["Pendiente Plan de Acción", "Pendiente Verificación", "Cerrada"];
+const ESTADOS = ["Pendiente Plan de Acción", "Observada", "En ejecución", "Pendiente de evidencia", "Pendiente Verificación", "Cerrada"];
 
 const FORM_VACIO = {
   fuente_identificacion: "BS",
@@ -17,7 +18,7 @@ const FORM_VACIO = {
   plan_accion: "",
   categoria: "",
   subcategoria: "",
-  area_responsable: "",
+  areas: [],
   requiere_cambio_sgc: "No",
   plazo_ejecucion: "",
   fecha_cierre_plan: "",
@@ -70,7 +71,7 @@ export default function RegistrarView() {
           </select>
         </div>
         <div>
-          <label className="field-label">N° de AC (opcional, ej. AM BS-EA-01-25)</label>
+          <label className="field-label">N° de AC (opcional, ej. AM BS-EA-01-26)</label>
           <input
             className="text-input"
             value={form.numero_ac_original}
@@ -103,8 +104,8 @@ export default function RegistrarView() {
 
       <div className="grid-2" style={{ marginBottom: 12 }}>
         <div>
-          <label className="field-label">Área Responsable</label>
-          <input className="text-input" value={form.area_responsable} onChange={set("area_responsable")} />
+          <label className="field-label">Área(s) Responsable(s)</label>
+          <AreasSelector value={form.areas} onChange={(v) => setForm({ ...form, areas: v })} />
         </div>
         <div>
           <label className="field-label">¿Se requiere un cambio en el SGC?</label>

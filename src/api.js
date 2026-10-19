@@ -135,7 +135,7 @@ export async function completarPlanAccion(id, data) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("No se pudo guardar el plan de acción");
+  if (!res.ok) throw await errorDe(res, "No se pudo guardar el plan de acción");
   return res.json();
 }
 
@@ -145,7 +145,7 @@ export async function completarVerificacion(id, data) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("No se pudo guardar la verificación");
+  if (!res.ok) throw await errorDe(res, "No se pudo guardar la verificación");
   return res.json();
 }
 
@@ -202,6 +202,24 @@ export async function crearLoteAcciones(data) {
 export async function fetchAreas() {
   const res = await authFetch(`${API_BASE}/areas`);
   if (!res.ok) throw new Error("No se pudo cargar las áreas");
+  return res.json();
+}
+
+// Crea un área nueva en el catálogo y devuelve la lista actualizada
+export async function crearArea(nombre) {
+  const res = await authFetch(`${API_BASE}/areas`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nombre }),
+  });
+  if (!res.ok) throw await errorDe(res, "No se pudo crear el área");
+  return res.json();
+}
+
+// El área terminó de subir sus archivos: pasa a verificación de Sistemas de Gestión
+export async function enviarEvidencia(id) {
+  const res = await authFetch(`${API_BASE}/acciones-mejora/${id}/enviar-evidencia`, { method: "POST" });
+  if (!res.ok) throw await errorDe(res, "No se pudo enviar la evidencia");
   return res.json();
 }
 
