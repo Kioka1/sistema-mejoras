@@ -17,6 +17,7 @@ import CargarView from "./components/CargarView.jsx";
 import PanelView from "./components/PanelView.jsx";
 import AccionesMejoraView from "./components/AccionesMejoraView.jsx";
 import UsuariosView from "./components/UsuariosView.jsx";
+import Campanita from "./components/Campanita.jsx";
 
 const TABS = [
   { key: "buscar", label: "Buscar", icon: Search },
@@ -197,6 +198,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2.5 text-xs">
+            <Campanita onAbrirAccion={(id) => handleVerAccionDesdeBusqueda({ id })} />
             <div className="px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
               <span className="text-slate-400">Total:</span>

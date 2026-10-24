@@ -47,8 +47,10 @@ export async function login(correo, password) {
   guardarSesion(data.access_token, data.usuario);
   return data.usuario;
 }
+
 // --- Google Auth ---
-export const GOOGLE_CLIENT_ID = "349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com"; 
+
+export const GOOGLE_CLIENT_ID = "349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com";
 
 export async function loginConGoogle(credential) {
   const res = await fetch(`${API_BASE}/auth/google`, {
@@ -66,6 +68,7 @@ export async function loginConGoogle(credential) {
 }
 
 // Wrapper central: agrega el token a cada pedido y cierra sesión si expiró
+
 async function authFetch(url, options = {}) {
   const token = getToken();
   const headers = { ...(options.headers || {}) };
@@ -80,10 +83,32 @@ async function authFetch(url, options = {}) {
   return res;
 }
 
+// --- Notificaciones (la campanita) ---
+
+export async function fetchNotificaciones() {
+  const res = await authFetch(`${API_BASE}/notificaciones`);
+  if (!res.ok) throw new Error("No se pudieron cargar las notificaciones");
+  return res.json(); // { no_leidas, items: [{ id, asunto, mensaje, fecha, leida, accion_id }] }
+}
+
+export async function marcarNotificacionLeida(id) {
+  const res = await authFetch(`${API_BASE}/notificaciones/${id}/leer`, { method: "POST" });
+  if (!res.ok) throw new Error("No se pudo marcar como leída");
+  return res.json();
+}
+
+export async function marcarTodasLeidas() {
+  const res = await authFetch(`${API_BASE}/notificaciones/leer-todas`, { method: "POST" });
+  if (!res.ok) throw new Error("No se pudieron marcar como leídas");
+  return res.json();
+}
+
 // --- Registros ---
 
 export async function fetchRegistros(query = "") {
-  const url = query ? `${API_BASE}/registros?q=${encodeURIComponent(query)}` : `${API_BASE}/registros`;
+  const url = query
+    ? `${API_BASE}/registros?q=${encodeURIComponent(query)}`
+    : `${API_BASE}/registros`;
   const res = await authFetch(url);
   if (!res.ok) throw new Error("No se pudo cargar los registros");
   return res.json();
@@ -206,6 +231,7 @@ export async function fetchAreas() {
 }
 
 // Crea un área nueva en el catálogo y devuelve la lista actualizada
+
 export async function crearArea(nombre) {
   const res = await authFetch(`${API_BASE}/areas`, {
     method: "POST",
@@ -217,8 +243,11 @@ export async function crearArea(nombre) {
 }
 
 // El área terminó de subir sus archivos: pasa a verificación de Sistemas de Gestión
+
 export async function enviarEvidencia(id) {
-  const res = await authFetch(`${API_BASE}/acciones-mejora/${id}/enviar-evidencia`, { method: "POST" });
+  const res = await authFetch(`${API_BASE}/acciones-mejora/${id}/enviar-evidencia`, {
+    method: "POST",
+  });
   if (!res.ok) throw await errorDe(res, "No se pudo enviar la evidencia");
   return res.json();
 }
@@ -239,9 +268,27 @@ export async function enviarObservacion(id, texto) {
   return res.json();
 }
 
-export async function subirEvidencia(id, archivo) {
+// --- Evidencias ---
+
+// Cambia a cuál acción del plan corresponde un archivo ya subido
+// null = sin asignar
+
+export async function asignarEvidencia(evidenciaId, planItemId) {
+  const res = await authFetch(`${API_BASE}/evidencias/${evidenciaId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plan_item_id: planItemId }),
+  });
+  if (!res.ok) throw await errorDe(res, "No se pudo asignar el archivo");
+  return res.json();
+}
+
+export async function subirEvidencia(id, archivo, planItemId = null) {
   const formData = new FormData();
   formData.append("archivo", archivo);
+  if (planItemId !== null && planItemId !== undefined) {
+    formData.append("plan_item_id", String(planItemId));
+  }
   const res = await authFetch(`${API_BASE}/acciones-mejora/${id}/evidencias`, {
     method: "POST",
     body: formData,
@@ -251,7 +298,9 @@ export async function subirEvidencia(id, archivo) {
 }
 
 export async function eliminarEvidencia(evidenciaId) {
-  const res = await authFetch(`${API_BASE}/evidencias/${evidenciaId}`, { method: "DELETE" });
+  const res = await authFetch(`${API_BASE}/evidencias/${evidenciaId}`, {
+    method: "DELETE",
+  });
   if (!res.ok) throw await errorDe(res, "No se pudo eliminar la evidencia");
   return res.json();
 }

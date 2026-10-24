@@ -167,6 +167,8 @@ class EvidenciaArchivo(Base):
     nombre_guardado = Column(String, nullable=False)
     fecha = Column(String, nullable=False)
     subido_por = Column(String, nullable=True)
+        # A cuál acción del plan (PlanAccionItem) corresponde este archivo; None = sin asignar
+    plan_item_id = Column(Integer, ForeignKey("plan_accion_items.id", ondelete="SET NULL"), nullable=True)
 
 
 class Recomendacion(Base):
@@ -254,6 +256,20 @@ class Usuario(Base):
     @property
     def areas(self):
         return sorted(a.nombre for a in self.areas_rel)
+
+
+class Notificacion(Base):
+    """Avisos dentro del sistema (la campanita). Cada aviso que sale por correo también queda aquí."""
+
+    __tablename__ = "notificaciones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    asunto = Column(String, nullable=False)
+    mensaje = Column(Text, nullable=False)
+    fecha = Column(String, nullable=False)
+    leida = Column(Boolean, nullable=False, default=False)
+    accion_id = Column(Integer, nullable=True)
 
 
 # --- Utilidades de áreas ---

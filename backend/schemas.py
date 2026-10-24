@@ -140,10 +140,34 @@ class EvidenciaOut(BaseModel):
     nombre_original: str
     fecha: str
     subido_por: Optional[str] = None
+    plan_item_id: Optional[int] = None    
 
     class Config:
         from_attributes = True
 
+
+# --- Notificaciones del sistema ---
+
+class NotificacionOut(BaseModel):
+    id: int
+    asunto: str
+    mensaje: str
+    fecha: str
+    leida: bool
+    accion_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class NotificacionesOut(BaseModel):
+    no_leidas: int
+    items: List[NotificacionOut]
+
+
+class EvidenciaAsignar(BaseModel):         
+    """Cambia a qué acción del plan corresponde un archivo (None = sin asignar)."""
+    plan_item_id: Optional[int] = None
 
 class RecomendacionOut(BaseModel):
     id: int

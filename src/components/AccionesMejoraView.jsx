@@ -8,6 +8,7 @@ import {
   enviarObservacion,
   subirEvidencia,
   eliminarEvidencia,
+  enviarEvidencia,
   urlDescargarEvidencia,
   completarPlanAccion,
   completarVerificacion,
@@ -740,27 +741,83 @@ function PlanAccionForm({ accion, onCompletado }) {
   );
 }
 
+// Quita acentos, mayúsculas y signos para comparar nombres sin que importen esos detalles
+const normalizarNombre = (s) =>
+  (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+// Pista (no bloquea nada): ¿el nombre del archivo se parece a la evidencia que el área indicó en el formulario?
+function nombreCoincide(nombreArchivo, esperado) {
+  const a = normalizarNombre((nombreArchivo || "").replace(/\.[^.]+$/, ""));
+  const e = normalizarNombre(esperado);
+  return !!a && !!e && (e.includes(a) || a.includes(e));
+}
+
 function EvidenciasCard({ accion, rol, onCambio }) {
   const [subiendo, setSubiendo] = useState(false);
+  const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState("");
   const esAdmin = rol === "Sistemas de Gestión (calidad)";
   const cerrada = accion.estado === "Cerrada";
-  const puedeSubir = esAdmin ? !cerrada : ["Pendiente Verificación", "Observada"].includes(accion.estado);
+  // Mismas reglas que el backend: el área solo sube, quita y envía archivos mientras
+  // se le está pidiendo la evidencia ("Pendiente de evidencia"). La ingeniera puede hasta el cierre.
+  const esperandoEvidencia = accion.estado === "Pendiente de evidencia";
+  const puedeSubir = esAdmin ? !cerrada : esperandoEvidencia;
+  const puedeQuitar = esAdmin || esperandoEvidencia;
   const evidencias = accion.evidencias || [];
 
-  const elegir = async (e) => {
-    const archivo = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!archivo) return;
+  // Checklist: cada acción del plan con la evidencia que el área prometió en el formulario
+  const items = accion.plan_items || [];
+  const conChecklist = items.length > 0;
+  const archivosDe = (itemId) => evidencias.filter((ev) => ev.plan_item_id === itemId);
+  const sinAsignar = conChecklist ? evidencias.filter((ev) => !items.some((i) => i.id === ev.plan_item_id)) : [];
+  const faltan = items.filter((i) => archivosDe(i.id).length === 0);
+  const completo = conChecklist && faltan.length === 0 && sinAsignar.length === 0;
+  const puedeEnviar = !esAdmin && esperandoEvidencia;
+  const envioHabilitado = conChecklist ? completo : evidencias.length > 0;
+
+  const subir = async (archivos, itemId = null) => {
+    if (archivos.length === 0) return;
     setSubiendo(true);
     setError("");
     try {
-      await subirEvidencia(accion.id, archivo);
-      onCambio();
+      for (const archivo of archivos) {
+        await subirEvidencia(accion.id, archivo, itemId);
+      }
     } catch (err) {
       setError(err.message || "No se pudo subir el archivo");
     } finally {
       setSubiendo(false);
+      onCambio(); // refresca también si alguno de varios archivos ya se alcanzó a subir
+    }
+  };
+
+  const elegir = (itemId = null) => (e) => {
+    const archivos = Array.from(e.target.files || []);
+    e.target.value = "";
+    subir(archivos, itemId);
+  };
+
+  const reasignar = async (evidenciaId, valor) => {
+    setError("");
+    try {
+      await asignarEvidencia(evidenciaId, valor === "" ? null : Number(valor));
+      onCambio();
+    } catch (err) {
+      setError(err.message || "No se pudo asignar el archivo");
+    }
+  };
+
+  const enviar = async () => {
+    if (!window.confirm("¿Enviar la evidencia a Sistemas de Gestión? Después ya no podrás agregar ni quitar archivos.")) return;
+    setEnviando(true);
+    setError("");
+    try {
+      await enviarEvidencia(accion.id);
+      onCambio();
+    } catch (err) {
+      setError(err.message || "No se pudo enviar la evidencia");
+    } finally {
+      setEnviando(false);
     }
   };
 
@@ -775,48 +832,136 @@ function EvidenciasCard({ accion, rol, onCambio }) {
     }
   };
 
+  const inputArchivos = (itemId) => (
+    <input
+      type="file"
+      multiple
+      accept=".pdf,.xls,.xlsx,.csv,.doc,.docx,.jpg,.jpeg,.png,.webp"
+      onChange={elegir(itemId)}
+      disabled={subiendo || enviando}
+    />
+  );
+
+  const filaArchivo = (ev, item) => (
+    <div className="timeline-item" key={ev.id} style={{ alignItems: "center", flexWrap: "wrap" }}>
+      <a href={urlDescargarEvidencia(ev.id)} target="_blank" rel="noreferrer" style={{ color: "var(--accent-blue)" }}>
+        {ev.nombre_original}
+      </a>
+      <span>—</span>
+      <span>{ev.fecha}{ev.subido_por ? ` · ${ev.subido_por}` : ""}</span>
+      {item && (
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          {nombreCoincide(ev.nombre_original, item.evidencia) ? "· nombre coincide con lo indicado" : "· revisar: el nombre no se parece a lo indicado"}
+        </span>
+      )}
+      {conChecklist && puedeQuitar && (
+        <select
+          value={ev.plan_item_id ?? ""}
+          onChange={(e) => reasignar(ev.id, e.target.value)}
+          title="Acción del plan a la que corresponde este archivo"
+          style={{ marginLeft: 8, maxWidth: 220 }}
+        >
+          <option value="">Sin asignar</option>
+          {items.map((i) => (
+            <option key={i.id} value={i.id}>{`${i.orden + 1}. ${i.accion_texto}`.slice(0, 50)}</option>
+          ))}
+        </select>
+      )}
+      {puedeQuitar && (
+        <button className="icon-btn" title="Eliminar" onClick={() => quitar(ev.id)} style={{ marginLeft: 8 }}>✕</button>
+      )}
+    </div>
+  );
+
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <p className="stage-title" style={{ marginTop: 0 }}>Evidencia</p>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6, marginBottom: 10 }}>
-        <div><b>Evidencia que se presentará:</b> {accion.evidencia_parte1 || "—"}</div>
         <div><b>Plazo de ejecución:</b> {accion.plazo_ejecucion || "—"}</div>
+        {!conChecklist && (
+          <div style={{ whiteSpace: "pre-line" }}><b>Evidencia que se presentará:</b> {accion.evidencia_parte1 || "—"}</div>
+        )}
       </div>
 
-      {evidencias.length === 0 ? (
-        <p className="empty-note">Todavía no se subió ningún archivo.</p>
+      {conChecklist ? (
+        <>
+          <p style={{ fontSize: 13, margin: "0 0 8px", color: completo ? "var(--text-secondary)" : "var(--danger-text)" }}>
+            {completo
+              ? `✓ Evidencia completa: ${items.length} de ${items.length} acciones del plan tienen archivo.`
+              : `Faltan archivos en ${faltan.length} de ${items.length} acciones del plan${sinAsignar.length ? " y hay archivos sin asignar" : ""}.`}
+          </p>
+          {items.map((it) => {
+            const archivos = archivosDe(it.id);
+            return (
+              <div key={it.id} style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 0" }}>
+                <div style={{ fontSize: 14 }}><b>{it.orden + 1}. {it.accion_texto}</b></div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", margin: "2px 0 6px" }}>
+                  <b>Evidencia indicada:</b> {it.evidencia || "—"} ·{" "}
+                  <span style={{ color: archivos.length ? "var(--text-secondary)" : "var(--danger-text)" }}>
+                    {archivos.length ? `${archivos.length} archivo(s)` : "falta evidencia"}
+                  </span>
+                </div>
+                {archivos.map((ev) => filaArchivo(ev, it))}
+                {puedeSubir && <div style={{ marginTop: 6 }}>{inputArchivos(it.id)}</div>}
+              </div>
+            );
+          })}
+          {sinAsignar.length > 0 && (
+            <div style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 0" }}>
+              <div style={{ fontSize: 14 }}><b>Archivos sin asignar</b></div>
+              <div style={{ fontSize: 13, color: "var(--text-secondary)", margin: "2px 0 6px" }}>
+                Elige a qué acción del plan corresponde cada uno.
+              </div>
+              {sinAsignar.map((ev) => filaArchivo(ev, null))}
+            </div>
+          )}
+        </>
       ) : (
-        evidencias.map((ev) => (
-          <div className="timeline-item" key={ev.id} style={{ alignItems: "center" }}>
-            <a href={urlDescargarEvidencia(ev.id)} target="_blank" rel="noreferrer" style={{ color: "var(--accent-blue)" }}>
-              {ev.nombre_original}
-            </a>
-            <span>—</span>
-            <span>{ev.fecha}{ev.subido_por ? ` · ${ev.subido_por}` : ""}</span>
-            {(!cerrada || esAdmin) && (
-              <button className="icon-btn" title="Eliminar" onClick={() => quitar(ev.id)} style={{ marginLeft: 8 }}>✕</button>
-            )}
-          </div>
-        ))
+        <>
+          {evidencias.length === 0 ? (
+            <p className="empty-note">Todavía no se subió ningún archivo.</p>
+          ) : (
+            evidencias.map((ev) => filaArchivo(ev, null))
+          )}
+          {puedeSubir && (
+            <div style={{ marginTop: 12 }}>
+              <label className="field-label">Subir evidencia (PDF, Excel, Word o fotos — máx. 15 MB)</label>
+              {inputArchivos(null)}
+            </div>
+          )}
+        </>
+      )}
+      {subiendo && <p style={{ fontSize: 13, margin: "8px 0 0" }}>Subiendo...</p>}
+      {puedeSubir && conChecklist && (
+        <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: "8px 0 0" }}>
+          PDF, Excel, Word o fotos — máx. 15 MB por archivo. Sube cada archivo en su acción del plan, con el mismo nombre que indicaste.
+        </p>
       )}
 
-      {puedeSubir && (
-        <div style={{ marginTop: 12 }}>
-          <label className="field-label">Subir evidencia (PDF, Excel, Word o fotos — máx. 15 MB)</label>
-          <input
-            type="file"
-            accept=".pdf,.xls,.xlsx,.csv,.doc,.docx,.jpg,.jpeg,.png,.webp"
-            onChange={elegir}
-            disabled={subiendo}
-          />
-          {subiendo && <span style={{ fontSize: 13, marginLeft: 8 }}>Subiendo...</span>}
+      {puedeEnviar && (
+        <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <button className="btn-primary" onClick={enviar} disabled={enviando || subiendo || !envioHabilitado}>
+            {enviando ? "Enviando..." : "Enviar evidencia a Sistemas de Gestión"}
+          </button>
+          {!envioHabilitado && (
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+              {conChecklist ? "Completa la evidencia de todas las acciones del plan para poder enviar." : "Sube al menos un archivo para poder enviar."}
+            </span>
+          )}
         </div>
+      )}
+
+      {!esAdmin && !puedeSubir && !cerrada && (
+        <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "12px 0 0" }}>
+          {accion.estado === "En ejecución" && `Podrás subir la evidencia cuando se cumpla el plazo de ejecución (${accion.plazo_ejecucion || "—"}). Te avisaremos por correo.`}
+          {accion.estado === "Pendiente Verificación" && "Ya enviaste la evidencia. Sistemas de Gestión la está verificando."}
+          {accion.estado === "Observada" && "Corrige el formulario según la observación; después se te pedirá la evidencia."}
+        </p>
       )}
       {error && <p style={{ fontSize: 13, color: "var(--danger-text)", marginBottom: 0 }}>{error}</p>}
     </div>
   );
 }
-
 function ObservacionCard({ accion, onEnviada }) {
   const [texto, setTexto] = useState("");
   const [error, setError] = useState("");
