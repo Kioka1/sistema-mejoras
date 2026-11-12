@@ -24,25 +24,25 @@ Cómo correrlo:
 
 
 
-La documentación interactiva de la API queda disponible automáticamente
-
-en http://localhost:8000/docs
+La documentación interactiva de la API está desactivada.
 
 """
 
 
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, Request, Response, Path as ParametroRuta
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, delete
 
-from typing import Optional, List
+from typing import Annotated, Optional, List
 
 import os
 
@@ -59,11 +59,20 @@ from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta
 
 from io import BytesIO
+from urllib.parse import quote
+from pathlib import Path
+from hmac import compare_digest
+from hashlib import sha256
+from secrets import token_urlsafe
+from zipfile import ZipFile, BadZipFile
+from functools import partial
+from formulario_word import generar_formulario, datos_imagen
 
 from openpyxl import Workbook, load_workbook
 
 from openpyxl.styles import Font, PatternFill
 
+from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import id_token as google_id_token
 
 from google.auth.transport import requests as google_requests
@@ -72,17 +81,25 @@ from google.auth.transport import requests as google_requests
 
 from database import (
 
-    Base, engine, get_db, SessionLocal, Registro, AccionMejora, HistorialAccion, Solicitud, HistorialSolicitud,
+    Base, engine, get_db, SessionLocal, Registro, AccionMejora, FormularioHistorico, HistorialAccion, Solicitud, HistorialSolicitud,
 
-    Usuario, EvidenciaArchivo, Recomendacion, Area, PlanAccionItem, Notificacion,
+    Usuario, IdentidadGoogle, DesafioGoogle, EvidenciaArchivo, Recomendacion, Area, PlanAccionItem, Notificacion,
 
     parse_areas, asignar_areas, obtener_o_crear_area,
 
 )
 
-from auth import obtener_usuario_actual, obtener_usuario_para_descarga, requerir_admin, requerir_admin_descarga, verificar_password, crear_token, hashear_password
+from auth import (obtener_usuario_actual, requerir_admin, verificar_password, hashear_password,
+                  iniciar_sesion, cerrar_sesion, limpiar_sesiones_vencidas, revocar_sesiones_usuario, HASH_FICTICIO)
+from config_seguridad import COOKIE_GOOGLE, OPCIONES_COOKIE, ORIGENES_WEB
+from seguridad_http import SeguridadHTTP, limitar, logger
+from seguridad_archivos import nombre_archivo_seguro, validar_evidencia, validar_xml, validar_zip_oficina
 
+
+from importar_formularios import router as formularios_router
 from notificaciones import enviar_correo
+from plazos import hoy_local, sumar_habiles, alerta_accion
+from evidencias import checklist, comprobar_archivo, validar_nombres
 
 from schemas import (
 
@@ -99,6 +116,8 @@ from schemas import (
 )
 
 
+
+IdRuta = Annotated[int, ParametroRuta(gt=0, le=2147483647)]
 
 Base.metadata.create_all(bind=engine)
 
@@ -119,10 +138,12 @@ def _ciclo_revision_periodica():
             _revisar_vencidas_y_notificar(db)
 
             _revisar_solicitudes_vencidas(db)
+            limpiar_sesiones_vencidas(db, int(time.time()))
+            db.execute(delete(DesafioGoogle).where(DesafioGoogle.expira <= int(time.time())))
+            db.commit()
 
-        except Exception as e:
-
-            print(f"[REVISIÓN PERIÓDICA] Error: {e}")
+        except Exception as error:
+            logger.error("Error en revisión periódica (%s)", type(error).__name__)
 
         finally:
 
@@ -144,150 +165,127 @@ async def lifespan(app: FastAPI):
 
 
 
-app = FastAPI(title="Sistema de Registro y Seguimiento - API", lifespan=lifespan)
-
-
-
+app = FastAPI(title="Sistema de Registro y Seguimiento - API", lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(formularios_router)
+app.add_middleware(SeguridadHTTP)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_origin_regex=r"https://[A-Za-z0-9.-]+\.(devtunnels\.ms|app\.github\.dev)",
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=sorted(ORIGENES_WEB),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Content-Type"],
+    expose_headers=["Retry-After"],
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def error_validacion(request: Request, error: RequestValidationError):
+    # Pydantic incluye el valor original, que puede ser una contraseña o un token.
+    return JSONResponse({"detail": "Revisa los campos y el formato de la solicitud."}, status_code=422)
 
 
-
-# =========================================================================
-
-# Autenticación
-
-# =========================================================================
-
+def _buscar_usuario_por_correo(db: Session, correo: str) -> Optional[Usuario]:
+    coincidencias = db.query(Usuario).filter(func.lower(Usuario.correo) == correo).limit(2).all()
+    return coincidencias[0] if len(coincidencias) == 1 else None
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
-
-def login(data: LoginRequest, db: Session = Depends(get_db)):
-
-    usuario = db.query(Usuario).filter(Usuario.correo == data.correo).first()
-
-    if not usuario or not verificar_password(data.password, usuario.password_hash):
-
-        raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
-
-    if not usuario.activo:
-
-        raise HTTPException(status_code=401, detail="Este usuario está desactivado")
-
-    token = crear_token(usuario.correo, usuario.rol, usuario.sede)
-
-    return LoginResponse(access_token=token, usuario=usuario)
+def login(data: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    limitar("login-cuenta", data.correo, 10, ventana=900)
+    usuario = _buscar_usuario_por_correo(db, data.correo)
+    valida = verificar_password(data.password, usuario.password_hash if usuario else HASH_FICTICIO)
+    if not valida or not usuario or not usuario.activo or usuario.rol not in {"admin", "usuario"}:
+        raise HTTPException(401, "Correo o contraseña incorrectos.")
+    iniciar_sesion(request, response, usuario, db)
+    return LoginResponse(usuario=usuario)
 
 
-
-
-
-# ID de cliente OAuth de Google (Google Cloud Console → Credenciales → ID de cliente OAuth 2.0,
-
-# tipo "Aplicación web"). Ponerlo como variable de entorno GOOGLE_CLIENT_ID en el servidor.
-
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID","349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com")
-
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com")
 DOMINIO_PERMITIDO = "unifranz.edu.bo"
 
 
-
+@app.post("/api/auth/google/desafio")
+def desafio_google(request: Request, response: Response, db: Session = Depends(get_db)):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(503, "El inicio de sesión con Google no está disponible.")
+    anterior = request.cookies.get(COOKIE_GOOGLE, "")
+    if len(anterior) == 43:
+        db.execute(delete(DesafioGoogle).where(DesafioGoogle.clave == sha256(anterior.encode()).hexdigest()))
+    nonce = token_urlsafe(32)
+    db.add(DesafioGoogle(clave=sha256(nonce.encode()).hexdigest(), expira=int(time.time()) + 600))
+    db.commit()
+    response.set_cookie(COOKIE_GOOGLE, nonce, max_age=600, **OPCIONES_COOKIE)
+    return {"nonce": nonce}
 
 
 @app.post("/api/auth/google", response_model=LoginResponse)
-
-def login_google(data: GoogleLoginRequest, db: Session = Depends(get_db)):
-
+def login_google(data: GoogleLoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     if not GOOGLE_CLIENT_ID:
-
-        raise HTTPException(status_code=500, detail="El login con Google no está configurado en el servidor (falta GOOGLE_CLIENT_ID).")
-
+        raise HTTPException(503, "El inicio de sesión con Google no está disponible.")
+    nonce = request.cookies.get(COOKIE_GOOGLE, "")
+    clave_nonce = sha256(nonce.encode()).hexdigest()
+    desafio = db.get(DesafioGoogle, clave_nonce) if len(nonce) == 43 else None
+    if not desafio or desafio.expira <= int(time.time()):
+        raise HTTPException(401, "Vuelve a cargar la página para iniciar sesión con Google.")
     try:
-
         payload = google_id_token.verify_oauth2_token(
-
-            data.credential, google_requests.Request(), GOOGLE_CLIENT_ID
-
+            data.credential, partial(google_requests.Request(), timeout=5), GOOGLE_CLIENT_ID
         )
+    except (ValueError, GoogleAuthError):
+        raise HTTPException(401, "No se pudo verificar la credencial de Google.")
 
-    except ValueError:
-
-        raise HTTPException(status_code=401, detail="Token de Google inválido o vencido")
-
-
+    nonce_recibido = payload.get("nonce")
+    if not isinstance(nonce_recibido, str) or not compare_digest(nonce.encode(), nonce_recibido.encode()):
+        raise HTTPException(401, "La credencial de Google no corresponde a esta solicitud.")
 
     correo = (payload.get("email") or "").lower().strip()
+    sujeto = payload.get("sub")
+    if (payload.get("email_verified") is not True or payload.get("hd") != DOMINIO_PERMITIDO
+            or not correo.endswith(f"@{DOMINIO_PERMITIDO}") or len(correo) > 254
+            or not isinstance(sujeto, str) or not 1 <= len(sujeto) <= 255):
+        raise HTTPException(403, "Solo se permite el ingreso con una cuenta institucional de Google Workspace.")
 
-    if not payload.get("email_verified") or not correo.endswith(f"@{DOMINIO_PERMITIDO}"):
+    limitar("login-cuenta", correo, 10, ventana=900)
+    identidad = db.get(IdentidadGoogle, sujeto)
+    usuario = db.get(Usuario, identidad.usuario_id) if identidad else _buscar_usuario_por_correo(db, correo)
+    if not usuario or usuario.rol != "usuario" or not usuario.activo or usuario.correo.lower() != correo:
+        raise HTTPException(401, "Esta cuenta no admite el ingreso con Google.")
+    if not identidad:
+        if db.query(IdentidadGoogle).filter_by(usuario_id=usuario.id).first():
+            raise HTTPException(401, "Esta cuenta ya está vinculada a otra identidad institucional.")
+        if not data.password_vinculacion:
+            raise HTTPException(409, "Confirma tu contraseña del Sistema de Mejoras para vincular Google.")
+        if not verificar_password(data.password_vinculacion, usuario.password_hash):
+            raise HTTPException(401, "La contraseña de vinculación es incorrecta.")
 
-        raise HTTPException(status_code=403, detail=f"Solo se permite el ingreso con correos @{DOMINIO_PERMITIDO}")
+    try:
+        consumido = db.execute(delete(DesafioGoogle).where(
+            DesafioGoogle.clave == clave_nonce,
+            DesafioGoogle.expira > int(time.time()),
+        ))
+        if consumido.rowcount != 1:
+            raise HTTPException(401, "El desafío de Google expiró. Vuelve a cargar la página.")
+        if not identidad:
+            db.add(IdentidadGoogle(sujeto=sujeto, usuario_id=usuario.id))
+        iniciar_sesion(request, response, usuario, db)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(503, "Hubo otro inicio de sesión simultáneo. Vuelve a intentarlo.")
 
-
-
-    usuario = db.query(Usuario).filter(Usuario.correo == correo).first()
-
-    if not usuario:
-
-        # Primer ingreso: se crea la cuenta sola, como Director/a de Carrera sin área todavía.
-
-        # Sistemas de Gestión le asigna el área desde Usuarios para que empiece a ver sus acciones.
-
-        usuario = Usuario(
-
-            nombre_completo=payload.get("name") or correo.split("@")[0],
-
-            correo=correo,
-
-            password_hash=hashear_password(uuid.uuid4().hex),  # nunca se usa: solo entra por Google
-
-            rol="usuario",
-
-            sede="El Alto",
-
-            area=None,
-
-            activo=True,
-
-        )
-
-        db.add(usuario)
-
-        db.commit()
-
-        db.refresh(usuario)
-
-        _notificar_admins(
-
-            db,
-
-            "Nueva cuenta creada por Google — falta asignarle área",
-
-            f"{usuario.nombre_completo} ({usuario.correo}) ingresó por primera vez con su correo institucional. "
-
-            "Asígnale su Área/Carrera en Usuarios para que pueda ver sus Acciones de Mejora.",
-
-        )
-
-    elif not usuario.activo:
-
-        raise HTTPException(status_code=401, detail="Este usuario está desactivado")
+    response.delete_cookie(COOKIE_GOOGLE, **OPCIONES_COOKIE)
+    return LoginResponse(usuario=usuario)
 
 
+@app.post("/api/auth/logout", status_code=204)
+def logout(request: Request, response: Response, db: Session = Depends(get_db),
+           usuario: Usuario = Depends(obtener_usuario_actual)):
+    cerrar_sesion(request, response, db)
 
-    token = crear_token(usuario.correo, usuario.rol, usuario.sede)
 
-    return LoginResponse(access_token=token, usuario=usuario)
-
-
-
+@app.post("/api/auth/actividad", status_code=204)
+def registrar_actividad(usuario: Usuario = Depends(obtener_usuario_actual)):
+    pass
 
 
 @app.get("/api/auth/me", response_model=UsuarioOut)
@@ -322,7 +320,7 @@ def crear_usuario(data: UsuarioCreate, db: Session = Depends(get_db), usuario: U
 
     data.correo = correo_normalizado
 
-    existente = db.query(Usuario).filter(Usuario.correo == data.correo).first()
+    existente = db.query(Usuario).filter(func.lower(Usuario.correo) == data.correo).first()
 
     if existente:
 
@@ -364,7 +362,7 @@ def crear_usuario(data: UsuarioCreate, db: Session = Depends(get_db), usuario: U
 
 @app.patch("/api/usuarios/{usuario_id}", response_model=UsuarioOut)
 
-def editar_usuario(usuario_id: int, data: UsuarioEdicion, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+def editar_usuario(usuario_id: IdRuta, data: UsuarioEdicion, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     objetivo = db.query(Usuario).filter(Usuario.id == usuario_id).first()
 
@@ -382,13 +380,16 @@ def editar_usuario(usuario_id: int, data: UsuarioEdicion, db: Session = Depends(
 
     area_texto = cambios.pop("area", None)
 
+    cambio_activo = "activo" in cambios and cambios["activo"] != objetivo.activo
     for key, value in cambios.items():
 
         setattr(objetivo, key, value)
 
     if password_nueva:
-
         objetivo.password_hash = hashear_password(password_nueva)
+
+    if password_nueva or cambio_activo:
+        revocar_sesiones_usuario(objetivo.id, db)
 
     if objetivo.rol == "usuario":
 
@@ -479,9 +480,26 @@ def _notificar_admins(db: Session, asunto: str, mensaje: str):
 
 @app.get("/api/notificaciones", response_model=NotificacionesOut)
 def mis_notificaciones(db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+    _revisar_vencidas_y_notificar(db)
+    acciones = db.query(AccionMejora)
+    if usuario.rol != "admin":
+        ids = [a.id for a in usuario.areas_rel]
+        acciones = acciones.filter(AccionMejora.areas_rel.any(Area.id.in_(ids)))
+    pendientes = []
+    for accion in acciones.all():
+        alerta = accion.alerta_plazo
+        if usuario.rol == "admin" and accion.estado == "Pendiente Verificación":
+            alerta = {"tipo": "Verificación", "fecha": "", "nivel": "revision",
+                      "texto": "Pendiente de revisión y cierre"}
+        if alerta:
+            pendientes.append(dict(alerta, accion_id=accion.id,
+                                   numero=accion.numero_ac_original or accion.numero,
+                                   areas=accion.areas, estado=accion.estado))
+    pendientes.sort(key=lambda n: n["fecha"] or "9999-12-31")
     propias = db.query(Notificacion).filter(Notificacion.usuario_id == usuario.id)
     return {
         "no_leidas": propias.filter(Notificacion.leida == False).count(),
+        "pendientes": pendientes,
         "items": propias.order_by(Notificacion.id.desc()).limit(50).all(),
     }
 
@@ -496,7 +514,7 @@ def marcar_todas_leidas(db: Session = Depends(get_db), usuario: Usuario = Depend
 
 
 @app.post("/api/notificaciones/{notificacion_id}/leer")
-def marcar_leida(notificacion_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def marcar_leida(notificacion_id: IdRuta, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
     n = db.query(Notificacion).filter(
         Notificacion.id == notificacion_id, Notificacion.usuario_id == usuario.id
     ).first()
@@ -521,7 +539,7 @@ def marcar_leida(notificacion_id: int, db: Session = Depends(get_db), usuario: U
 
 @app.get("/api/registros", response_model=List[RegistroOut])
 
-def listar_registros(q: Optional[str] = None, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def listar_registros(q: Optional[str] = Query(None, max_length=120), db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     query = db.query(Registro)
 
@@ -553,7 +571,7 @@ def listar_registros(q: Optional[str] = None, db: Session = Depends(get_db), usu
 
 @app.get("/api/registros/{registro_id}/relacionados", response_model=List[RegistroOut])
 
-def registros_relacionados(registro_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def registros_relacionados(registro_id: IdRuta, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     base = db.query(Registro).filter(Registro.id == registro_id).first()
 
@@ -583,7 +601,7 @@ def registros_relacionados(registro_id: int, db: Session = Depends(get_db), usua
 
 @app.post("/api/registros", response_model=RegistroOut)
 
-def crear_registro(registro: RegistroCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def crear_registro(registro: RegistroCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     nuevo = Registro(**registro.dict())
 
@@ -601,7 +619,7 @@ def crear_registro(registro: RegistroCreate, db: Session = Depends(get_db), usua
 
 @app.get("/api/dashboard")
 
-def resumen_dashboard(db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def resumen_dashboard(db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     registros = db.query(Registro).all()
 
@@ -783,23 +801,26 @@ COLUMNAS_DISPONIBLES = {
 
 def exportar_acciones(
 
-    filtro: str = "todos",
+    filtro: str = Query("todos", max_length=32),
 
-    anio: Optional[str] = None,
+    anio: Optional[str] = Query(None, pattern=r"^[0-9]{4}$"),
 
-    ids: Optional[str] = None,
+    ids: Optional[str] = Query(None, max_length=7500, pattern=r"^[1-9][0-9]{0,9}(,[1-9][0-9]{0,9})*$"),
 
-    columnas: Optional[str] = None,
+    columnas: Optional[str] = Query(None, max_length=1000),
 
     db: Session = Depends(get_db),
 
-    usuario: Usuario = Depends(requerir_admin_descarga),
+    usuario: Usuario = Depends(requerir_admin),
 
 ):
 
+    if filtro not in FILTROS_EXPORTACION or (filtro == "anual" and not anio and not ids):
+        raise HTTPException(400, "Selecciona un filtro y año válidos para exportar.")
+    if columnas and any(c not in COLUMNAS_DISPONIBLES for c in columnas.split(",")):
+        raise HTTPException(400, "Selecciona columnas válidas para exportar.")
+
     query = db.query(AccionMejora)
-
-
 
     if ids:
 
@@ -867,7 +888,12 @@ def exportar_acciones(
 
     for r in registros:
 
-        ws.append([COLUMNAS_DISPONIBLES[c][1](r) for c in columnas_elegidas])
+        fila = ws.max_row + 1
+        for indice, columna in enumerate(columnas_elegidas, start=1):
+            valor = COLUMNAS_DISPONIBLES[columna][1](r)
+            celda = ws.cell(row=fila, column=indice, value=valor)
+            if isinstance(valor, str):
+                celda.data_type = "s"
 
 
 
@@ -983,11 +1009,23 @@ def _formatear_fecha(valor):
 
 async def importar_excel(archivo: UploadFile = File(...), db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
-    contenido = await archivo.read()
+    if not (archivo.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(400, "Selecciona un archivo Excel .xlsx.")
+    contenido = await archivo.read(TAMANO_MAX_BYTES + 1)
+    if len(contenido) > TAMANO_MAX_BYTES:
+        raise HTTPException(413, "El archivo supera el máximo de 15 MB.")
 
     try:
-
-        wb = load_workbook(BytesIO(contenido), data_only=True)
+        with ZipFile(BytesIO(contenido)) as archivo_zip:
+            validar_zip_oficina(archivo_zip, "xl/workbook.xml")
+            for entrada in archivo_zip.infolist():
+                if entrada.filename.lower().endswith((".xml", ".rels")):
+                    validar_xml(archivo_zip.read(entrada))
+        wb = load_workbook(BytesIO(contenido), data_only=True, keep_links=False)
+        if len(wb.worksheets) > 30 or any(
+            hoja.max_row > 10000 or hoja.max_column > 150 for hoja in wb.worksheets
+        ) or sum(hoja.max_row * hoja.max_column for hoja in wb.worksheets) > 500000:
+            raise ValueError("El archivo excede el límite de celdas.")
 
     except Exception:
 
@@ -1159,7 +1197,7 @@ async def importar_excel(archivo: UploadFile = File(...), db: Session = Depends(
 
 @app.get("/api/acciones-mejora/{accion_id}", response_model=AccionMejoraOut)
 
-def obtener_accion(accion_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def obtener_accion(accion_id: IdRuta, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
 
     accion = (
 
@@ -1185,9 +1223,43 @@ def obtener_accion(accion_id: int, db: Session = Depends(get_db), usuario: Usuar
 
 
 
+@app.post("/api/acciones-mejora/{accion_id}/formulario-word")
+async def descargar_formulario_word(
+    accion_id: IdRuta,
+    firma_sello: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(obtener_usuario_actual),
+):
+    accion = db.query(AccionMejora).filter(AccionMejora.id == accion_id).first()
+    if not accion:
+        raise HTTPException(status_code=404, detail="Acción de Mejora no encontrada")
+    _verificar_acceso_accion(usuario, accion)
+    if accion.estado != "Cerrada":
+        raise HTTPException(status_code=400, detail="El formulario para impresión solo está disponible para acciones cerradas.")
+    imagen = None
+    if firma_sello:
+        if usuario.rol != "admin":
+            raise HTTPException(status_code=403, detail="Solo Sistemas de Gestión puede incorporar una imagen de firma y sello.")
+        imagen = await firma_sello.read(3 * 1024 * 1024 + 1)
+        if len(imagen) > 3 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="La imagen de firma y sello supera los 3 MB.")
+        try:
+            datos_imagen(imagen)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+    documento = generar_formulario(accion, imagen)
+    codigo = re.sub(r'[^\w .-]', '_', accion.numero_ac_original or accion.numero)
+    nombre = quote(f"{codigo} - Cerrada.docx")
+    return StreamingResponse(
+        documento,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{nombre}", "Cache-Control": "no-store"},
+    )
+
+
 @app.patch("/api/acciones-mejora/{accion_id}", response_model=AccionMejoraOut)
 
-def editar_accion(accion_id: int, data: AccionMejoraEdicion, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+def editar_accion(accion_id: IdRuta, data: AccionMejoraEdicion, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     accion = db.query(AccionMejora).filter(AccionMejora.id == accion_id).first()
 
@@ -1198,6 +1270,9 @@ def editar_accion(accion_id: int, data: AccionMejoraEdicion, db: Session = Depen
 
 
     cambios = data.dict(exclude_unset=True)
+
+    if "plazo_entrega_plan" in cambios and cambios["plazo_entrega_plan"] != accion.plazo_entrega_plan:
+        cambios["plazo_entrega_plan"] = _resolver_plazo(cambios["plazo_entrega_plan"])
 
     areas_nuevas = cambios.pop("areas", None)
 
@@ -1249,7 +1324,7 @@ SEDE_CODIGOS = {
 
 SEDE_DEFECTO = "El Alto"
 
-PLAZOS_ENTREGA_DIAS = (7, 14)
+# Plazo predeterminado: 10 días hábiles; se permite personalizarlo.
 
 
 
@@ -1305,22 +1380,23 @@ def _generar_numero_ac(db: Session, origen: Optional[str], sede: Optional[str] =
 
 
 
-def _plazo_desde_dias(dias: Optional[int]) -> Optional[str]:
-
-    """7 o 14 días desde hoy, como fecha ISO. None si no se indicó."""
-
-    if dias is None:
-
-        return None
-
-    if dias not in PLAZOS_ENTREGA_DIAS:
-
-        raise HTTPException(status_code=400, detail="El plazo para entregar el plan debe ser de 7 o 14 días.")
-
-    return (date.today() + timedelta(days=dias)).isoformat()
+def _plazo_desde_dias(dias: Optional[int]) -> str:
+    dias = 10 if dias is None else dias
+    if isinstance(dias, bool) or not isinstance(dias, int) or dias < 1 or dias > 365:
+        raise HTTPException(status_code=400, detail="Indica entre 1 y 365 días hábiles.")
+    return sumar_habiles(hoy_local(), dias).isoformat()
 
 
-
+def _resolver_plazo(fecha, dias=None):
+    if dias is not None or not fecha:
+        return _plazo_desde_dias(dias)
+    try:
+        limite = date.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="La fecha límite debe tener formato AAAA-MM-DD.")
+    if limite < hoy_local():
+        raise HTTPException(status_code=400, detail="La fecha límite no puede ser anterior a hoy.")
+    return limite.isoformat()
 
 
 def _nombres_areas(areas: Optional[List[str]], texto: Optional[str] = None) -> List[str]:
@@ -1351,9 +1427,7 @@ def crear_accion(data: AccionMejoraCreate, db: Session = Depends(get_db), usuari
 
     plazo_dias = datos.pop("plazo_dias", None)
 
-    if plazo_dias is not None:
-
-        datos["plazo_entrega_plan"] = _plazo_desde_dias(plazo_dias)
+    datos["plazo_entrega_plan"] = _resolver_plazo(datos.get("plazo_entrega_plan"), plazo_dias)
 
     datos["sede"] = (datos.get("sede") or "").strip() or SEDE_DEFECTO
 
@@ -1443,7 +1517,7 @@ def crear_lote_acciones(data: LoteAccionesCreate, db: Session = Depends(get_db),
 
 
 
-    plazo = _plazo_desde_dias(data.plazo_dias) if data.plazo_dias is not None else (data.plazo_entrega_plan or None)
+    plazo = _resolver_plazo(data.plazo_entrega_plan, data.plazo_dias)
 
 
 
@@ -1479,6 +1553,7 @@ def crear_lote_acciones(data: LoteAccionesCreate, db: Session = Depends(get_db),
 
             fuente_identificacion="BS",
 
+            procesos=(data.procesos or "").strip() or None,
             solicitante=(data.solicitante or "").strip() or None,
 
             plazo_entrega_plan=plazo,
@@ -1615,7 +1690,7 @@ def crear_area(data: AreaCreate, db: Session = Depends(get_db), usuario: Usuario
 
 @app.post("/api/acciones-mejora/{accion_id}/observacion", response_model=AccionMejoraOut)
 
-def observar_accion(accion_id: int, data: ObservacionCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+def observar_accion(accion_id: IdRuta, data: ObservacionCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     """La ingeniera deja un comentario para que el área corrija: estado 'Observada' + correo al área."""
 
@@ -1688,27 +1763,7 @@ TAMANO_MAX_BYTES = 15 * 1024 * 1024
 
 
 def _checklist_evidencias(accion: AccionMejora):
-
-    """Cruza lo que el área prometió en el formulario con los archivos subidos.
-
-    Devuelve (items_sin_evidencia, archivos_sin_asignar). Sin plan en lista, no hay nada que cruzar."""
-
-    if not accion.plan_items:
-
-        return [], []
-
-    ids = {i.id for i in accion.plan_items}
-
-    con_archivo = {ev.plan_item_id for ev in accion.evidencias if ev.plan_item_id in ids}
-
-    faltan = [i for i in accion.plan_items if i.id not in con_archivo]
-
-    sin_asignar = [ev for ev in accion.evidencias if ev.plan_item_id not in ids]
-
-    return faltan, sin_asignar
-
-
-
+    return checklist(accion)
 
 
 def _texto_faltantes(faltan) -> str:
@@ -1723,11 +1778,11 @@ def _texto_faltantes(faltan) -> str:
 
 async def subir_evidencia(
 
-    accion_id: int,
+    accion_id: IdRuta,
 
     archivo: UploadFile = File(...),
 
-    plan_item_id: Optional[int] = Form(None),
+    plan_item_id: Optional[int] = Form(None, gt=0, le=2147483647),
 
     db: Session = Depends(get_db),
 
@@ -1769,27 +1824,42 @@ async def subir_evidencia(
 
 
 
-    extension = os.path.splitext(archivo.filename or "")[1].lower()
+    if accion.estado == "Cerrada":
+        raise HTTPException(status_code=400, detail="No se pueden cambiar las evidencias de una acción cerrada.")
+    try:
+        nombre_original = nombre_archivo_seguro(archivo.filename)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+
+    if accion.plan_items:
+        try:
+            comprobar_archivo(accion, plan_item_id, nombre_original)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    extension = os.path.splitext(nombre_original)[1].lower()
 
     if extension not in EXTENSIONES_PERMITIDAS:
 
         raise HTTPException(status_code=400, detail="Tipo de archivo no permitido. Usa PDF, Excel, Word o imágenes (JPG/PNG).")
 
-    contenido = await archivo.read()
+    contenido = await archivo.read(TAMANO_MAX_BYTES + 1)
 
     if len(contenido) > TAMANO_MAX_BYTES:
 
         raise HTTPException(status_code=400, detail="El archivo supera el máximo de 15 MB.")
 
-
+    try:
+        validar_evidencia(contenido, extension)
+    except (ValueError, BadZipFile, KeyError, RuntimeError, OSError):
+        raise HTTPException(400, "El archivo no corresponde al tipo indicado o contiene elementos no permitidos.")
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
     nombre_guardado = f"{uuid.uuid4().hex}{extension}"
 
-    with open(os.path.join(UPLOAD_DIR, nombre_guardado), "wb") as f:
-
-        f.write(contenido)
+    ruta = Path(UPLOAD_DIR) / nombre_guardado
+    ruta.write_bytes(contenido)
 
 
 
@@ -1799,7 +1869,7 @@ async def subir_evidencia(
 
         plan_item_id=plan_item_id,
 
-        nombre_original=os.path.basename(archivo.filename or nombre_guardado),
+        nombre_original=nombre_original,
 
         nombre_guardado=nombre_guardado,
 
@@ -1809,7 +1879,12 @@ async def subir_evidencia(
 
     ))
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        ruta.unlink(missing_ok=True)
+        raise
 
     _agregar_historial(db, accion, f"Evidencia subida: {archivo.filename}")
 
@@ -1825,7 +1900,7 @@ async def subir_evidencia(
 
 @app.post("/api/acciones-mejora/{accion_id}/enviar-evidencia", response_model=AccionMejoraOut)
 
-def enviar_evidencia(accion_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def enviar_evidencia(accion_id: IdRuta, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
 
     """El área terminó de subir sus archivos: la acción pasa a verificación de Sistemas de Gestión."""
 
@@ -1853,7 +1928,7 @@ def enviar_evidencia(accion_id: int, db: Session = Depends(get_db), usuario: Usu
 
     if sin_asignar:
 
-        raise HTTPException(status_code=400, detail="Hay archivos sin asignar a una acción del plan; asígnalos antes de enviar.")
+        raise HTTPException(status_code=400, detail="Hay archivos sin asignar, repetidos o cuyos nombres no coinciden con el plan. Corrígelos antes de enviar.")
 
 
 
@@ -1929,7 +2004,7 @@ def enviar_evidencia(accion_id: int, db: Session = Depends(get_db), usuario: Usu
 
 @app.patch("/api/evidencias/{evidencia_id}", response_model=AccionMejoraOut)
 
-def asignar_evidencia(evidencia_id: int, data: EvidenciaAsignar, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def asignar_evidencia(evidencia_id: IdRuta, data: EvidenciaAsignar, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
 
     """Cambia a cuál acción del plan corresponde un archivo."""
 
@@ -1951,6 +2026,13 @@ def asignar_evidencia(evidencia_id: int, data: EvidenciaAsignar, db: Session = D
 
         raise HTTPException(status_code=400, detail="Esa acción del plan no pertenece a esta Acción de Mejora.")
 
+    if accion.estado == "Cerrada":
+        raise HTTPException(status_code=400, detail="No se pueden cambiar las evidencias de una acción cerrada.")
+    if data.plan_item_id is not None:
+        try:
+            comprobar_archivo(accion, data.plan_item_id, ev.nombre_original, excluir_id=ev.id)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
     ev.plan_item_id = data.plan_item_id
 
     db.commit()
@@ -1969,7 +2051,7 @@ def asignar_evidencia(evidencia_id: int, data: EvidenciaAsignar, db: Session = D
 
 @app.get("/api/evidencias/{evidencia_id}/descargar")
 
-def descargar_evidencia(evidencia_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_para_descarga)):
+def descargar_evidencia(evidencia_id: IdRuta, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
 
     ev = db.query(EvidenciaArchivo).filter(EvidenciaArchivo.id == evidencia_id).first()
 
@@ -1981,13 +2063,13 @@ def descargar_evidencia(evidencia_id: int, db: Session = Depends(get_db), usuari
 
     _verificar_acceso_accion(usuario, accion)
 
-    ruta = os.path.join(UPLOAD_DIR, ev.nombre_guardado)
-
-    if not os.path.exists(ruta):
+    directorio = Path(UPLOAD_DIR).resolve()
+    ruta = (directorio / ev.nombre_guardado).resolve()
+    if ruta.parent != directorio or not ruta.is_file():
 
         raise HTTPException(status_code=404, detail="El archivo ya no está en el servidor")
 
-    return FileResponse(ruta, filename=ev.nombre_original)
+    return FileResponse(ruta, filename=ev.nombre_original, media_type="application/octet-stream")
 
 
 
@@ -1995,7 +2077,7 @@ def descargar_evidencia(evidencia_id: int, db: Session = Depends(get_db), usuari
 
 @app.delete("/api/evidencias/{evidencia_id}", response_model=AccionMejoraOut)
 
-def eliminar_evidencia(evidencia_id: int, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def eliminar_evidencia(evidencia_id: IdRuta, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
 
     ev = db.query(EvidenciaArchivo).filter(EvidenciaArchivo.id == evidencia_id).first()
 
@@ -2011,17 +2093,23 @@ def eliminar_evidencia(evidencia_id: int, db: Session = Depends(get_db), usuario
 
         raise HTTPException(status_code=400, detail="Ya no se pueden quitar archivos de esta acción.")
 
-    ruta = os.path.join(UPLOAD_DIR, ev.nombre_guardado)
+    if accion.estado == "Cerrada":
+        raise HTTPException(status_code=400, detail="No se pueden cambiar las evidencias de una acción cerrada.")
 
-    if os.path.exists(ruta):
-
-        os.remove(ruta)
+    directorio = Path(UPLOAD_DIR).resolve()
+    ruta = (directorio / ev.nombre_guardado).resolve()
+    if ruta.parent != directorio:
+        raise HTTPException(404, "El archivo no está disponible.")
 
     nombre = ev.nombre_original
 
     db.delete(ev)
 
     db.commit()
+    try:
+        ruta.unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning("No se pudo quitar un archivo de evidencia (%s).", type(error).__name__)
 
     _agregar_historial(db, accion, f"Evidencia eliminada: {nombre}")
 
@@ -2043,9 +2131,10 @@ def _estado_tras_plan(accion: AccionMejora) -> str:
 
     - plazo de ejecución todavía no cumplido  -> "En ejecución" (no se piden evidencias aún)
 
-    - plazo cumplido y sin evidencia          -> "Pendiente de evidencia"
+    - plazo cumplido                         -> "Pendiente de evidencia"
 
-    - plazo cumplido y con evidencia          -> "Pendiente Verificación"
+    El área debe revisar las asignaciones y enviar explícitamente la evidencia,
+    también al corregir un plan con archivos de una entrega anterior.
 
     """
 
@@ -2057,11 +2146,11 @@ def _estado_tras_plan(accion: AccionMejora) -> str:
 
         return "Pendiente de evidencia"
 
-    if fin > date.today():
+    if fin > hoy_local():
 
         return "En ejecución"
 
-    return "Pendiente Verificación" if accion.evidencias else "Pendiente de evidencia"
+    return "Pendiente de evidencia"
 
 
 
@@ -2069,7 +2158,7 @@ def _estado_tras_plan(accion: AccionMejora) -> str:
 
 @app.put("/api/acciones-mejora/{accion_id}/plan-accion", response_model=AccionMejoraOut)
 
-def completar_plan_accion(accion_id: int, data: PlanAccionUpdate, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def completar_plan_accion(accion_id: IdRuta, data: PlanAccionUpdate, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
 
     """Primera Parte del formulario — Sección a ser completada por el Área Responsable."""
 
@@ -2137,11 +2226,17 @@ def completar_plan_accion(accion_id: int, data: PlanAccionUpdate, db: Session = 
 
         raise HTTPException(status_code=400, detail="Indica el plazo para la ejecución del plan de acción.")
 
-    if plazo < date.today():
+    if plazo < hoy_local():
 
         raise HTTPException(status_code=400, detail="El plazo de ejecución no puede ser una fecha pasada.")
 
 
+
+    for _, evidencia in items:
+        try:
+            validar_nombres(evidencia)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
 
     era_observada = accion.estado == "Observada"
 
@@ -2209,7 +2304,7 @@ def completar_plan_accion(accion_id: int, data: PlanAccionUpdate, db: Session = 
 
     if accion.estado == "En ejecución":
 
-        mensaje += "\nLas evidencias se le solicitarán automáticamente al área cuando llegue ese plazo."
+        mensaje += f"\nFecha límite para enviar evidencias: {accion.plazo_evidencias} (2 días hábiles después de terminar la ejecución)."
 
     mensaje += "\n\nIngresa al sistema para revisar el formulario."
 
@@ -2252,6 +2347,8 @@ def _crear_accion_derivada(db: Session, original: AccionMejora) -> AccionMejora:
         estado="Pendiente Plan de Acción",
 
         fecha_creacion=_ahora(),
+
+        plazo_entrega_plan=_plazo_desde_dias(None),
 
         declaracion_hallazgo=f"[Reincidencia de {original.numero}] {original.declaracion_hallazgo}",
 
@@ -2303,7 +2400,7 @@ def _crear_accion_derivada(db: Session, original: AccionMejora) -> AccionMejora:
 
 @app.put("/api/acciones-mejora/{accion_id}/verificacion", response_model=AccionMejoraOut)
 
-def completar_verificacion(accion_id: int, data: VerificacionUpdate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+def completar_verificacion(accion_id: IdRuta, data: VerificacionUpdate, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     accion = db.query(AccionMejora).filter(AccionMejora.id == accion_id).first()
 
@@ -2323,9 +2420,12 @@ def completar_verificacion(accion_id: int, data: VerificacionUpdate, db: Session
 
     if sin_asignar:
 
-        raise HTTPException(status_code=400, detail="No se puede cerrar: hay archivos sin asignar a una acción del plan.")
+        raise HTTPException(status_code=400, detail="No se puede cerrar: hay archivos sin asignar, repetidos o cuyos nombres no coinciden con el plan.")
 
 
+
+    if not (data.descripcion_verificacion or "").strip() or not (data.conclusion or "").strip():
+        raise HTTPException(status_code=400, detail="Completa la descripción de la verificación y la conclusión antes de cerrar.")
 
     for key, value in data.dict(exclude_unset=True).items():
 
@@ -2387,208 +2487,38 @@ def completar_verificacion(accion_id: int, data: VerificacionUpdate, db: Session
 
 
 
-# Cuántos días antes del plazo se avisa al área. El día del plazo del formulario también se avisa.
-
-AVISO_DIAS_ANTES = (3, 1)
-
-
-
-
-
 def _revisar_vencidas_y_notificar(db: Session):
-
-    """
-
-    Revisión automática de plazos (se ejecuta cada hora y al abrir la lista):
-
-      1. Plan de acción no entregado a tiempo      -> recordatorio diario al área.
-
-      2. "En ejecución" y se cumplió el plazo       -> pasa a "Pendiente de evidencia" y avisa al área.
-
-      3. "Pendiente de evidencia"                   -> recordatorio cada 3 días.
-
-    """
-
-    hoy = date.today()
-
-    hoy_iso = hoy.isoformat()
-
-
-
-    # 1) Plazo para entregar el plan vencido
-
-    sin_plan = (
-
-        db.query(AccionMejora)
-
-        .filter(
-
-            AccionMejora.estado == "Pendiente Plan de Acción",
-
-            AccionMejora.plazo_entrega_plan.isnot(None),
-
-            AccionMejora.plazo_entrega_plan != "",
-
-        )
-
-        .all()
-
-    )
-
-    for accion in sin_plan:
-
-        try:
-
-            limite = date.fromisoformat(accion.plazo_entrega_plan)
-
-        except ValueError:
-
+    """Avisos diarios desde dos días hábiles antes, sin repetir en el mismo día."""
+    hoy = hoy_local()
+    for accion in db.query(AccionMejora).filter(AccionMejora.estado.in_(
+            ["Pendiente Plan de Acción", "Observada", "En ejecución", "Pendiente de evidencia"])).all():
+        historico = accion.formulario_historico
+        if historico and not historico.seguimiento_activo:
             continue
-
-        if accion.ultima_notificacion_vencimiento == hoy_iso:
-
-            continue  # ya se avisó hoy
-
-        faltan = (limite - hoy).days
-
-        if faltan < 0:
-
-            _notificar_usuarios_de_area(
-
-                db, accion.areas,
-
-                f"Recordatorio: plazo vencido — {accion.numero}",
-
-                f"La Acción de Mejora {accion.numero} debía entregarse el {accion.plazo_entrega_plan} y todavía no se completó el plan de acción.",
-
-            )
-
-            accion.ultima_notificacion_vencimiento = hoy_iso
-
-            _agregar_historial(db, accion, f"Recordatorio automático de vencimiento enviado a {accion.area_responsable or 'Área Responsable'}")
-
-        elif faltan == 0 or faltan in AVISO_DIAS_ANTES:
-
-            cuando = "vence HOY" if faltan == 0 else f"vence en {faltan} día(s)"
-
-            _notificar_usuarios_de_area(
-
-                db, accion.areas,
-
-                f"Tu formulario {cuando} — {accion.numero}",
-
-                f"El plazo para llenar y enviar el formulario de la Acción de Mejora {accion.numero} {cuando} "
-
-                f"({accion.plazo_entrega_plan}). Ingresa al sistema, completa el plan de acción y envíalo.",
-
-            )
-
-            accion.ultima_notificacion_vencimiento = hoy_iso
-
-            _agregar_historial(db, accion, f"Aviso previo: el plazo para llenar el formulario {cuando}")
-
-
-
-    # 2) Se cumplió el plazo de ejecución: ahora sí se piden las evidencias
-
-    en_ejecucion = db.query(AccionMejora).filter(AccionMejora.estado == "En ejecución").all()
-
-    for accion in en_ejecucion:
-
-        try:
-
-            fin = date.fromisoformat(accion.plazo_ejecucion or "")
-
-        except ValueError:
-
-            continue
-
-        if fin > hoy:
-
-            # Aún no se cumple: aviso previo para que vayan preparando las evidencias
-
-            faltan = (fin - hoy).days
-
-            if faltan in AVISO_DIAS_ANTES and accion.ultima_notificacion_evidencia != hoy_iso:
-
-                _notificar_usuarios_de_area(
-
-                    db, accion.areas,
-
-                    f"Prepara tus evidencias (en {faltan} día(s)) — {accion.numero}",
-
-                    f"El plazo de ejecución de la Acción de Mejora {accion.numero} se cumple el {accion.plazo_ejecucion} "
-
-                    f"(en {faltan} día(s)). Ese día deberás subir al sistema la evidencia que indicaste en tu plan "
-
-                    "y presionar «Enviar evidencia».",
-
-                )
-
-                accion.ultima_notificacion_evidencia = hoy_iso
-
-                _agregar_historial(db, accion, f"Aviso previo: las evidencias se piden en {faltan} día(s)")
-
-            continue
-
-        # (desde aquí sigue igual que antes: accion.estado = "Pendiente de evidencia" ...) 
-
-        accion.estado = "Pendiente de evidencia"
-
-        accion.ultima_notificacion_evidencia = hoy_iso
-
-        _agregar_historial(db, accion, f"Se cumplió el plazo de ejecución ({accion.plazo_ejecucion}): el área debe subir las evidencias")
-
-        _notificar_usuarios_de_area(
-
-            db, accion.areas,
-
-            f"Sube tus evidencias — {accion.numero}",
-
-            f"Se cumplió el plazo de ejecución ({accion.plazo_ejecucion}) de la Acción de Mejora {accion.numero}. "
-
-            "Ingresa al sistema, sube la evidencia que indicaste en tu plan (PDF, Excel, fotos) y presiona «Enviar evidencia».",
-
-        )
-
-
-
-    # 3) Recordatorio de evidencia cada 3 días
-
-    por_evidenciar = db.query(AccionMejora).filter(AccionMejora.estado == "Pendiente de evidencia").all()
-
-    for accion in por_evidenciar:
-
-        ultima = accion.ultima_notificacion_evidencia
-
-        if ultima:
-
+        if accion.estado == "En ejecución":
             try:
-
-                if (hoy - date.fromisoformat(ultima)).days < 3:
-
-                    continue
-
+                if date.fromisoformat(accion.plazo_ejecucion or "") <= hoy:
+                    accion.estado = "Pendiente de evidencia"
+                    _agregar_historial(db, accion, "Terminó la ejecución: pendiente de enviar evidencias")
             except ValueError:
-
                 pass
-
-        _notificar_usuarios_de_area(
-
-            db, accion.areas,
-
-            f"Recordatorio: sube tu evidencia — {accion.numero}",
-
-            f"La Acción de Mejora {accion.numero} sigue esperando tu evidencia (plazo de ejecución: {accion.plazo_ejecucion}). "
-
-            "Ingresa al sistema, sube los archivos y presiona «Enviar evidencia».",
-
-        )
-
-        accion.ultima_notificacion_evidencia = hoy_iso
-
-        _agregar_historial(db, accion, "Recordatorio automático: falta enviar la evidencia")
-
+        alerta = alerta_accion(accion, hoy)
+        if not alerta or alerta["nivel"] == "pendiente":
+            continue
+        campo = ("ultima_notificacion_vencimiento" if alerta["tipo"] == "Formulario"
+                 else "ultima_notificacion_evidencia")
+        if getattr(accion, campo) == hoy.isoformat():
+            continue
+        mensaje = (f"{alerta['tipo']} de la Acción de Mejora {accion.numero}: {alerta['texto']}. "
+                   f"Fecha límite de entrega: {alerta['fecha']}. "
+                   + ("Completa el formulario y envíalo al sistema."
+                      if alerta["tipo"] == "Formulario" else
+                      "Sube los archivos y presiona «Enviar evidencias». El plazo de entrega es de "
+                      "2 días hábiles después de terminar la ejecución del plan."))
+        _notificar_usuarios_de_area(db, accion.areas,
+                                  f"{alerta['tipo']}: {alerta['texto']} — {accion.numero}", mensaje)
+        setattr(accion, campo, hoy.isoformat())
+        _agregar_historial(db, accion, f"Aviso automático: {alerta['tipo']} — {alerta['texto']}")
     db.commit()
 
 
@@ -2689,7 +2619,7 @@ def crear_solicitud(data: SolicitudCreate, db: Session = Depends(get_db), usuari
 
 @app.put("/api/solicitudes/{solicitud_id}/responder", response_model=SolicitudOut)
 
-def responder_solicitud(solicitud_id: int, data: SolicitudResponder, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
+def responder_solicitud(solicitud_id: IdRuta, data: SolicitudResponder, db: Session = Depends(get_db), usuario: Usuario = Depends(obtener_usuario_actual)):
 
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
 
@@ -2743,7 +2673,7 @@ def responder_solicitud(solicitud_id: int, data: SolicitudResponder, db: Session
 
 @app.patch("/api/solicitudes/{solicitud_id}", response_model=SolicitudOut)
 
-def editar_solicitud(solicitud_id: int, data: SolicitudEdicion, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
+def editar_solicitud(solicitud_id: IdRuta, data: SolicitudEdicion, db: Session = Depends(get_db), usuario: Usuario = Depends(requerir_admin)):
 
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
 

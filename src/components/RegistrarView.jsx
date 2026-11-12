@@ -1,3 +1,5 @@
+import { nombreEstado } from "../estados.js";
+import PlazoEntrega, { fechaBolivia, sumarHabiles } from "./PlazoEntrega.jsx";
 import { useState } from "react";
 import { crearAccion } from "../api.js";
 import AreasSelector from "./AreasSelector.jsx";
@@ -12,6 +14,7 @@ const ORIGENES = [
 const ESTADOS = ["Pendiente Plan de Acción", "Observada", "En ejecución", "Pendiente de evidencia", "Pendiente Verificación", "Cerrada"];
 
 const FORM_VACIO = {
+  procesos: "",
   fuente_identificacion: "BS",
   numero_ac_original: "",
   declaracion_hallazgo: "",
@@ -28,7 +31,8 @@ const FORM_VACIO = {
 };
 
 export default function RegistrarView() {
-  const [form, setForm] = useState(FORM_VACIO);
+  const formularioNuevo = () => ({ ...FORM_VACIO, plazo_entrega_plan: sumarHabiles(fechaBolivia(), 10) });
+  const [form, setForm] = useState(formularioNuevo);
   const [error, setError] = useState("");
   const [exito, setExito] = useState("");
   const [enviando, setEnviando] = useState(false);
@@ -46,7 +50,7 @@ export default function RegistrarView() {
     try {
       const creada = await crearAccion(form);
       setExito(`Acción de Mejora ${creada.numero} registrada con éxito.`);
-      setForm(FORM_VACIO);
+      setForm(formularioNuevo());
     } catch (e) {
       setError(e.message || "No se pudo registrar");
     } finally {
@@ -84,6 +88,12 @@ export default function RegistrarView() {
       <div style={{ marginBottom: 12 }}>
         <label className="field-label">Descripción</label>
         <textarea className="text-input" rows={3} value={form.declaracion_hallazgo} onChange={set("declaracion_hallazgo")} />
+      </div>
+
+      <PlazoEntrega value={form.plazo_entrega_plan} onChange={(fecha) => setForm({ ...form, plazo_entrega_plan: fecha })} />
+      <div style={{ marginBottom: 12 }}>
+        <label className="field-label">Proceso(s)</label>
+        <input className="text-input" value={form.procesos} onChange={set("procesos")} />
       </div>
 
       <div style={{ marginBottom: 12 }}>
@@ -131,7 +141,7 @@ export default function RegistrarView() {
         <label className="field-label">Estado</label>
         <select className="text-input" value={form.estado} onChange={set("estado")}>
           {ESTADOS.map((e) => (
-            <option key={e}>{e}</option>
+            <option key={e} value={e}>{nombreEstado(e)}</option>
           ))}
         </select>
       </div>

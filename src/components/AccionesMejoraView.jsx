@@ -1,3 +1,9 @@
+import { nombreEstado } from "../estados.js";
+import PlazoEntrega, { fechaBolivia, sumarHabiles } from "./PlazoEntrega.jsx";
+import AlertaPlazo, { IndicadorEstado, claseBadge, claseAlerta, fechaVencimiento } from "./AlertaPlazo.jsx";
+import PlanAccionForm from "./PlanAccionForm.jsx";
+import FormularioImpresion from "./FormularioImpresion.jsx";
+import EvidenciasCard from "./EvidenciasCard.jsx";
 import { useEffect, useState } from "react";
 import { ClipboardCheck, ChevronLeft, Download, Upload, Pencil, Eye } from "lucide-react";
 import {
@@ -6,20 +12,19 @@ import {
   fetchRecomendaciones,
   crearLoteAcciones,
   enviarObservacion,
-  subirEvidencia,
-  eliminarEvidencia,
-  enviarEvidencia,
-  urlDescargarEvidencia,
-  completarPlanAccion,
   completarVerificacion,
   urlExportarAcciones,
   importarExcelAcciones,
   editarAccion,
+  urlFormularioHistorico,
+  cambiarSeguimientoHistorico,
 } from "../api.js";
 
 const estadoPill = {
-  "Pendiente Plan de Acción": "pill-plan",
-  "Pendiente Verificación": "pill-verif",
+  "Pendiente Plan de Acción": "pill-formulario",
+  "Pendiente Verificación": "pill-verificacion",
+  "En ejecución": "pill-verif",
+  "Pendiente de evidencia": "pill-evidencia",
   Observada: "pill-nuevo",
   Cerrada: "pill-cerrada",
 };
@@ -55,6 +60,16 @@ export default function AccionesMejoraView({
 
   useEffect(() => {
     cargar();
+    const actualizar = () => fetchAcciones().then((lista) => setAcciones(Array.isArray(lista) ? lista : [])).catch(() => {});
+    const alVolver = () => document.visibilityState === "visible" && actualizar();
+    const timer = setInterval(actualizar, 60000);
+    document.addEventListener("visibilitychange", alVolver);
+    window.addEventListener("entregas-actualizadas", actualizar);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", alVolver);
+      window.removeEventListener("entregas-actualizadas", actualizar);
+    };
   }, []);
 
   useEffect(() => {
@@ -146,40 +161,21 @@ export default function AccionesMejoraView({
       {!loading && acciones.length > 0 && (
         <div className="ticket-table-wrap">
           <table className="ticket-table">
-            <colgroup>
-              <col style={{ width: 32 }} />
-              <col style={{ width: 150 }} />
-              <col style={{ width: 130 }} />
-              <col />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 112 }} />
-              <col style={{ width: 130 }} />
-              <col style={{ width: 132 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 70 }} />
-            </colgroup>
             <thead>
               <tr>
                 <th className="col-check"></th>
-                <th>Estado</th>
-                <th>N°</th>
-                <th>Hallazgo / Asunto</th>
-                <th>Solicitante</th>
-                <th>Área Responsable</th>
-                <th>Categoría</th>
-                <th>Fecha de Creación</th>
-                <th>Vencimiento</th>
+                <th>Código</th><th>Área</th><th>Estado</th>
+                <th>Fecha de creación</th><th>Fecha de vencimiento</th>
                 <th className="col-actions"></th>
               </tr>
             </thead>
             <tbody>
               {acciones.map((a) => {
-                const vencida = esVencida(a);
+                const alerta = a.alerta_plazo;
                 const codigoMostrar = a.numero_ac_original || a.numero_accion || a.numero;
-                const textoHallazgo = a.declaracion_hallazgo || a.hallazgo_asunto || a.hallazgo || "Sin descripción";
 
                 return (
-                  <tr key={a.id} className={vencida ? "row-overdue" : ""}>
+                  <tr key={a.id} className={claseAlerta(alerta, a.estado)}>
                     <td className="col-check" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
@@ -187,27 +183,14 @@ export default function AccionesMejoraView({
                         onChange={() => toggleSeleccion(a.id)}
                       />
                     </td>
+                    <td className="mono" onClick={() => abrir(a)} style={{ cursor: "pointer" }}>{codigoMostrar}</td>
+                    <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>{(a.areas || []).join(" / ") || a.area_responsable || "—"}</td>
                     <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>
-                      <span className={`pill ${estadoPill[a.estado] || "pill-nuevo"}`}>
-                        {a.estado || "Pendiente Plan de Acción"}
-                      </span>
-                    </td>
-                    <td className="mono" onClick={() => abrir(a)} style={{ cursor: "pointer" }}>
-                      {codigoMostrar}
-                    </td>
-                    <td className="asunto-cell" onClick={() => abrir(a)} style={{ cursor: "pointer" }}>
-                      <ClipboardCheck size={14} style={{ color: "var(--accent-blue)", marginRight: 6, verticalAlign: -2, flexShrink: 0 }} />
-                      <span className="asunto-text" title={textoHallazgo}>{textoHallazgo}</span>
-                    </td>
-                    <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>{a.solicitante || "—"}</td>
-                    <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>{a.area_responsable || a.procesos || "—"}</td>
-                    <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>
-                      {a.categoria ? `${a.categoria}${a.subcategoria ? " / " + a.subcategoria : ""}` : "—"}
+                      <span className={`pill ${estadoPill[a.estado] || "pill-plan"} ${claseBadge(a.estado)}`}><IndicadorEstado estado={a.estado} />{nombreEstado(a.estado)}</span>
+                      <AlertaPlazo alerta={alerta} />
                     </td>
                     <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>{a.fecha_creacion || "—"}</td>
-                    <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>
-                      {a.plazo_ejecucion || a.plazo_entrega_plan || a.plazo_plan || "—"}
-                    </td>
+                    <td onClick={() => abrir(a)} style={{ cursor: "pointer" }}>{fechaVencimiento(a) || "—"}</td>
                     <td className="col-actions">
                       <button className="icon-btn" title="Ver documento completo" onClick={(e) => { e.stopPropagation(); abrir(a); }}>
                         <Eye size={15} />
@@ -227,13 +210,6 @@ export default function AccionesMejoraView({
       )}
     </div>
   );
-}
-
-function esVencida(accion) {
-  if (accion.estado === "Cerrada") return false;
-  const plazoRelevante = accion.plazo_ejecucion || accion.plazo_entrega_plan || accion.plazo_plan;
-  if (!plazoRelevante) return false;
-  return new Date(plazoRelevante) < new Date();
 }
 
 function RecomendacionesPanel({ items, esAdmin }) {
@@ -259,8 +235,9 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
   const [areas, setAreas] = useState([]);
   const [cargandoAreas, setCargandoAreas] = useState(true);
   const [area, setArea] = useState("");
-  const [plazo, setPlazo] = useState("");
+  const [plazo, setPlazo] = useState(() => sumarHabiles(fechaBolivia(), 10));
   const [solicitante, setSolicitante] = useState("");
+  const [procesos, setProcesos] = useState("");
   const [hallazgos, setHallazgos] = useState([""]);
   const [recomendaciones, setRecomendaciones] = useState([]);
   const [error, setError] = useState("");
@@ -298,6 +275,7 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
         area,
         plazo_entrega_plan: plazo || null,
         solicitante: solicitante.trim() || null,
+        procesos: procesos.trim() || null,
         hallazgos: hs,
         recomendaciones: rs,
       });
@@ -345,6 +323,8 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
 
         <div className="grid-2">
           <div>
+            <label className="field-label">Proceso(s)</label>
+            <input className="text-input" style={{ marginBottom: 12 }} value={procesos} onChange={(e) => setProcesos(e.target.value)} />
             <label className="field-label">Área / Carrera destinataria</label>
             <select className="text-input" value={area} onChange={(e) => setArea(e.target.value)} disabled={cargandoAreas}>
               <option value="">{cargandoAreas ? "Cargando..." : "— Elige un área —"}</option>
@@ -359,8 +339,7 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
             )}
           </div>
           <div>
-            <label className="field-label">Plazo para entregar el plan de acción</label>
-            <input className="text-input" type="date" value={plazo} onChange={(e) => setPlazo(e.target.value)} />
+            <PlazoEntrega value={plazo} onChange={setPlazo} />
           </div>
         </div>
 
@@ -416,7 +395,7 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
   );
 }
 
-const ESTADOS_EDICION = ["Pendiente Plan de Acción", "Observada", "Pendiente Verificación", "Cerrada"];
+const ESTADOS_EDICION = ["Pendiente Plan de Acción", "Observada", "En ejecución", "Pendiente de evidencia", "Pendiente Verificación", "Cerrada"];
 
 function EditarRegistroForm({ accion, onCancel, onSaved }) {
   const [form, setForm] = useState({
@@ -486,11 +465,12 @@ function EditarRegistroForm({ accion, onCancel, onSaved }) {
           {campo("N° de AC (Código)", "numero_ac_original")}
           {campo("Sede", "sede")}
           {campo("Fuente / Origen", "fuente_identificacion")}
+          {campo("Proceso(s)", "procesos")}
           {campo("Área Responsable", "area_responsable")}
           <div>
             <label className="field-label">Estado</label>
             <select className="text-input" value={form.estado} onChange={set("estado")}>
-              {ESTADOS_EDICION.map((e) => <option key={e} value={e}>{e}</option>)}
+              {ESTADOS_EDICION.map((e) => <option key={e} value={e}>{nombreEstado(e)}</option>)}
             </select>
           </div>
           {campo("¿Requiere cambio SGC?", "requiere_cambio_sgc")}
@@ -499,7 +479,8 @@ function EditarRegistroForm({ accion, onCancel, onSaved }) {
         <p className="stage-title" style={{ fontSize: 12 }}>Plan de Acción</p>
         <div className="grid-2" style={{ marginBottom: 14 }}>
           {campo("Plan de Acción", "plan_accion", { textarea: true, rows: 4, full: true })}
-          {campo("Plazo Plan / Ejecución", "plazo_ejecucion")}
+          {campo("Fecha límite del formulario", "plazo_entrega_plan", { type: "date" })}
+          {campo("Plazo de ejecución", "plazo_ejecucion", { type: "date" })}
           {campo("Fecha de Cierre", "fecha_cierre_plan")}
         </div>
 
@@ -519,6 +500,8 @@ function EditarRegistroForm({ accion, onCancel, onSaved }) {
 
 function DetalleAccion({ id, rol, onBack }) {
   const [accion, setAccion] = useState(null);
+  const [errorHistorico, setErrorHistorico] = useState("");
+  const [cambiandoHistorico, setCambiandoHistorico] = useState(false);
 
   const cargar = () => {
     fetchAcciones().then((lista) => {
@@ -551,8 +534,8 @@ function DetalleAccion({ id, rol, onBack }) {
           <h2 className="mono" style={{ margin: 0, color: "var(--accent)", fontSize: 20 }}>
             {codigoOficial}
           </h2>
-          <span className={`pill ${estadoPill[accion.estado] || "pill-plan"}`}>
-            {accion.estado || "Pendiente Plan de Acción"}
+          <span className={`pill ${estadoPill[accion.estado] || "pill-plan"} ${claseBadge(accion.estado)}`}>
+            <IndicadorEstado estado={accion.estado} />{nombreEstado(accion.estado || "Pendiente Plan de Acción")}
           </span>
         </div>
 
@@ -584,6 +567,28 @@ function DetalleAccion({ id, rol, onBack }) {
           )}
         </div>
       )}
+
+      {accion.formulario_historico && <div className="card" style={{ marginBottom: 16 }}>
+        <p className="stage-title" style={{ marginTop: 0 }}>Formulario histórico original</p>
+        <p style={{ fontSize: 13 }}>Importado el {accion.formulario_historico.fecha_importacion} por {accion.formulario_historico.importado_por}.
+          {accion.formulario_historico.seguimiento_activo ? " Seguimiento activo." : " Sin recordatorios automáticos."}</p>
+        <a className="back-link" href={urlFormularioHistorico(accion.formulario_historico.id)} target="_blank" rel="noreferrer">
+          Descargar Word original: {accion.formulario_historico.nombre_original}
+        </a>
+        <p style={{ fontSize: 12, color: "var(--text-secondary)" }}>Conserva las imágenes, firmas y sellos del documento importado. No cuenta como evidencia del plan.</p>
+        {rol === "Sistemas de Gestión (calidad)" && accion.estado !== "Cerrada" && <button className="btn-primary" disabled={cambiandoHistorico}
+          onClick={async () => {
+            const activo = !accion.formulario_historico.seguimiento_activo;
+            if (activo && !window.confirm("¿Activar el seguimiento? Si hay plazos vencidos, el sistema podrá enviar recordatorios al área.")) return;
+            setCambiandoHistorico(true); setErrorHistorico("");
+            try { await cambiarSeguimientoHistorico(accion.formulario_historico.id, activo); cargar(); }
+            catch (err) { setErrorHistorico(err.message); }
+            finally { setCambiandoHistorico(false); }
+          }}>{cambiandoHistorico ? "Guardando..." : accion.formulario_historico.seguimiento_activo ? "Desactivar seguimiento" : "Activar seguimiento de este caso"}</button>}
+        {errorHistorico && <p role="alert" style={{ color: "var(--danger-text)" }}>{errorHistorico}</p>}
+      </div>}
+      <AlertaPlazo alerta={accion.alerta_plazo} />
+      <FormularioImpresion accion={accion} rol={rol} />
 
       {/* Plan de Acción — formulario si es tu turno de llenarlo, si no, solo lectura */}
       {puedeCompletarPlan ? (
@@ -659,309 +664,6 @@ function DetalleAccion({ id, rol, onBack }) {
   );
 }
 
-function PlanAccionForm({ accion, onCompletado }) {
-  const observada = accion.estado === "Observada";
-  const [form, setForm] = useState({
-    informe_investigacion: accion.informe_investigacion || "",
-    analisis_causa_raiz: accion.analisis_causa_raiz || "",
-    correccion_inmediata: accion.correccion_inmediata || "",
-    plan_accion: accion.plan_accion || "",
-    evidencia_parte1: accion.evidencia_parte1 || "",
-    responsables: accion.responsables || "",
-    plazo_ejecucion: accion.plazo_ejecucion || "",
-  });
-  const [error, setError] = useState("");
-  const [enviando, setEnviando] = useState(false);
-
-  const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
-
-  const enviar = async () => {
-    if (!form.plan_accion.trim()) {
-      setError("Describe el plan de acción antes de enviar");
-      return;
-    }
-    setEnviando(true);
-    setError("");
-    try {
-      await completarPlanAccion(accion.id, form);
-      onCompletado();
-    } catch (e) {
-      setError("No se pudo guardar. Intenta de nuevo.");
-    } finally {
-      setEnviando(false);
-    }
-  };
-
-  return (
-    <div className="card" style={{ marginBottom: 16 }}>
-      <p className="stage-title" style={{ marginTop: 0 }}>Plan de Acción — Área Responsable</p>
-      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0, marginBottom: 16 }}>
-        {observada
-          ? "Corrige lo indicado en la observación y vuelve a enviar el caso a verificación."
-          : "Completa esta sección para enviar el caso a verificación de Sistemas de Gestión."}
-      </p>
-
-      <label className="field-label">Informe de investigación</label>
-      <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.informe_investigacion} onChange={set("informe_investigacion")} />
-
-      <label className="field-label">Análisis de causa raíz</label>
-      <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.analisis_causa_raiz} onChange={set("analisis_causa_raiz")} />
-
-      <label className="field-label">Corrección inmediata</label>
-      <textarea className="text-input" rows={2} style={{ marginBottom: 12 }} value={form.correccion_inmediata} onChange={set("correccion_inmediata")} />
-
-      <label className="field-label">Plan de acción</label>
-      <textarea className="text-input" rows={4} style={{ marginBottom: 12 }} value={form.plan_accion} onChange={set("plan_accion")} />
-
-      <label className="field-label">Evidencia que presentarás</label>
-      <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: "0 0 6px" }}>
-        Describe qué evidencia vas a subir al sistema cuando se cumpla el plazo (ej. acta firmada, fotos, informe en PDF).
-        Los archivos se suben después, desde esta misma acción.
-      </p>
-      <textarea className="text-input" rows={2} style={{ marginBottom: 12 }} value={form.evidencia_parte1} onChange={set("evidencia_parte1")} />
-
-      <div className="grid-2">
-        <div>
-          <label className="field-label">Responsable(s)</label>
-          <input className="text-input" value={form.responsables} onChange={set("responsables")} />
-        </div>
-        <div>
-          <label className="field-label">Plazo de ejecución</label>
-          <input className="text-input" type="date" value={form.plazo_ejecucion} onChange={set("plazo_ejecucion")} />
-        </div>
-      </div>
-
-      <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
-        <button className="btn-primary" onClick={enviar} disabled={enviando}>
-          {enviando ? "Enviando..." : observada ? "Enviar corrección" : "Enviar a verificación"}
-        </button>
-        {error && <span style={{ fontSize: 13, color: "var(--danger-text)" }}>{error}</span>}
-      </div>
-    </div>
-  );
-}
-
-// Quita acentos, mayúsculas y signos para comparar nombres sin que importen esos detalles
-const normalizarNombre = (s) =>
-  (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
-// Pista (no bloquea nada): ¿el nombre del archivo se parece a la evidencia que el área indicó en el formulario?
-function nombreCoincide(nombreArchivo, esperado) {
-  const a = normalizarNombre((nombreArchivo || "").replace(/\.[^.]+$/, ""));
-  const e = normalizarNombre(esperado);
-  return !!a && !!e && (e.includes(a) || a.includes(e));
-}
-
-function EvidenciasCard({ accion, rol, onCambio }) {
-  const [subiendo, setSubiendo] = useState(false);
-  const [enviando, setEnviando] = useState(false);
-  const [error, setError] = useState("");
-  const esAdmin = rol === "Sistemas de Gestión (calidad)";
-  const cerrada = accion.estado === "Cerrada";
-  // Mismas reglas que el backend: el área solo sube, quita y envía archivos mientras
-  // se le está pidiendo la evidencia ("Pendiente de evidencia"). La ingeniera puede hasta el cierre.
-  const esperandoEvidencia = accion.estado === "Pendiente de evidencia";
-  const puedeSubir = esAdmin ? !cerrada : esperandoEvidencia;
-  const puedeQuitar = esAdmin || esperandoEvidencia;
-  const evidencias = accion.evidencias || [];
-
-  // Checklist: cada acción del plan con la evidencia que el área prometió en el formulario
-  const items = accion.plan_items || [];
-  const conChecklist = items.length > 0;
-  const archivosDe = (itemId) => evidencias.filter((ev) => ev.plan_item_id === itemId);
-  const sinAsignar = conChecklist ? evidencias.filter((ev) => !items.some((i) => i.id === ev.plan_item_id)) : [];
-  const faltan = items.filter((i) => archivosDe(i.id).length === 0);
-  const completo = conChecklist && faltan.length === 0 && sinAsignar.length === 0;
-  const puedeEnviar = !esAdmin && esperandoEvidencia;
-  const envioHabilitado = conChecklist ? completo : evidencias.length > 0;
-
-  const subir = async (archivos, itemId = null) => {
-    if (archivos.length === 0) return;
-    setSubiendo(true);
-    setError("");
-    try {
-      for (const archivo of archivos) {
-        await subirEvidencia(accion.id, archivo, itemId);
-      }
-    } catch (err) {
-      setError(err.message || "No se pudo subir el archivo");
-    } finally {
-      setSubiendo(false);
-      onCambio(); // refresca también si alguno de varios archivos ya se alcanzó a subir
-    }
-  };
-
-  const elegir = (itemId = null) => (e) => {
-    const archivos = Array.from(e.target.files || []);
-    e.target.value = "";
-    subir(archivos, itemId);
-  };
-
-  const reasignar = async (evidenciaId, valor) => {
-    setError("");
-    try {
-      await asignarEvidencia(evidenciaId, valor === "" ? null : Number(valor));
-      onCambio();
-    } catch (err) {
-      setError(err.message || "No se pudo asignar el archivo");
-    }
-  };
-
-  const enviar = async () => {
-    if (!window.confirm("¿Enviar la evidencia a Sistemas de Gestión? Después ya no podrás agregar ni quitar archivos.")) return;
-    setEnviando(true);
-    setError("");
-    try {
-      await enviarEvidencia(accion.id);
-      onCambio();
-    } catch (err) {
-      setError(err.message || "No se pudo enviar la evidencia");
-    } finally {
-      setEnviando(false);
-    }
-  };
-
-  const quitar = async (id) => {
-    if (!window.confirm("¿Eliminar este archivo?")) return;
-    setError("");
-    try {
-      await eliminarEvidencia(id);
-      onCambio();
-    } catch (err) {
-      setError(err.message || "No se pudo eliminar");
-    }
-  };
-
-  const inputArchivos = (itemId) => (
-    <input
-      type="file"
-      multiple
-      accept=".pdf,.xls,.xlsx,.csv,.doc,.docx,.jpg,.jpeg,.png,.webp"
-      onChange={elegir(itemId)}
-      disabled={subiendo || enviando}
-    />
-  );
-
-  const filaArchivo = (ev, item) => (
-    <div className="timeline-item" key={ev.id} style={{ alignItems: "center", flexWrap: "wrap" }}>
-      <a href={urlDescargarEvidencia(ev.id)} target="_blank" rel="noreferrer" style={{ color: "var(--accent-blue)" }}>
-        {ev.nombre_original}
-      </a>
-      <span>—</span>
-      <span>{ev.fecha}{ev.subido_por ? ` · ${ev.subido_por}` : ""}</span>
-      {item && (
-        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-          {nombreCoincide(ev.nombre_original, item.evidencia) ? "· nombre coincide con lo indicado" : "· revisar: el nombre no se parece a lo indicado"}
-        </span>
-      )}
-      {conChecklist && puedeQuitar && (
-        <select
-          value={ev.plan_item_id ?? ""}
-          onChange={(e) => reasignar(ev.id, e.target.value)}
-          title="Acción del plan a la que corresponde este archivo"
-          style={{ marginLeft: 8, maxWidth: 220 }}
-        >
-          <option value="">Sin asignar</option>
-          {items.map((i) => (
-            <option key={i.id} value={i.id}>{`${i.orden + 1}. ${i.accion_texto}`.slice(0, 50)}</option>
-          ))}
-        </select>
-      )}
-      {puedeQuitar && (
-        <button className="icon-btn" title="Eliminar" onClick={() => quitar(ev.id)} style={{ marginLeft: 8 }}>✕</button>
-      )}
-    </div>
-  );
-
-  return (
-    <div className="card" style={{ marginBottom: 16 }}>
-      <p className="stage-title" style={{ marginTop: 0 }}>Evidencia</p>
-      <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6, marginBottom: 10 }}>
-        <div><b>Plazo de ejecución:</b> {accion.plazo_ejecucion || "—"}</div>
-        {!conChecklist && (
-          <div style={{ whiteSpace: "pre-line" }}><b>Evidencia que se presentará:</b> {accion.evidencia_parte1 || "—"}</div>
-        )}
-      </div>
-
-      {conChecklist ? (
-        <>
-          <p style={{ fontSize: 13, margin: "0 0 8px", color: completo ? "var(--text-secondary)" : "var(--danger-text)" }}>
-            {completo
-              ? `✓ Evidencia completa: ${items.length} de ${items.length} acciones del plan tienen archivo.`
-              : `Faltan archivos en ${faltan.length} de ${items.length} acciones del plan${sinAsignar.length ? " y hay archivos sin asignar" : ""}.`}
-          </p>
-          {items.map((it) => {
-            const archivos = archivosDe(it.id);
-            return (
-              <div key={it.id} style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 0" }}>
-                <div style={{ fontSize: 14 }}><b>{it.orden + 1}. {it.accion_texto}</b></div>
-                <div style={{ fontSize: 13, color: "var(--text-secondary)", margin: "2px 0 6px" }}>
-                  <b>Evidencia indicada:</b> {it.evidencia || "—"} ·{" "}
-                  <span style={{ color: archivos.length ? "var(--text-secondary)" : "var(--danger-text)" }}>
-                    {archivos.length ? `${archivos.length} archivo(s)` : "falta evidencia"}
-                  </span>
-                </div>
-                {archivos.map((ev) => filaArchivo(ev, it))}
-                {puedeSubir && <div style={{ marginTop: 6 }}>{inputArchivos(it.id)}</div>}
-              </div>
-            );
-          })}
-          {sinAsignar.length > 0 && (
-            <div style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 0" }}>
-              <div style={{ fontSize: 14 }}><b>Archivos sin asignar</b></div>
-              <div style={{ fontSize: 13, color: "var(--text-secondary)", margin: "2px 0 6px" }}>
-                Elige a qué acción del plan corresponde cada uno.
-              </div>
-              {sinAsignar.map((ev) => filaArchivo(ev, null))}
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          {evidencias.length === 0 ? (
-            <p className="empty-note">Todavía no se subió ningún archivo.</p>
-          ) : (
-            evidencias.map((ev) => filaArchivo(ev, null))
-          )}
-          {puedeSubir && (
-            <div style={{ marginTop: 12 }}>
-              <label className="field-label">Subir evidencia (PDF, Excel, Word o fotos — máx. 15 MB)</label>
-              {inputArchivos(null)}
-            </div>
-          )}
-        </>
-      )}
-      {subiendo && <p style={{ fontSize: 13, margin: "8px 0 0" }}>Subiendo...</p>}
-      {puedeSubir && conChecklist && (
-        <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: "8px 0 0" }}>
-          PDF, Excel, Word o fotos — máx. 15 MB por archivo. Sube cada archivo en su acción del plan, con el mismo nombre que indicaste.
-        </p>
-      )}
-
-      {puedeEnviar && (
-        <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <button className="btn-primary" onClick={enviar} disabled={enviando || subiendo || !envioHabilitado}>
-            {enviando ? "Enviando..." : "Enviar evidencia a Sistemas de Gestión"}
-          </button>
-          {!envioHabilitado && (
-            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-              {conChecklist ? "Completa la evidencia de todas las acciones del plan para poder enviar." : "Sube al menos un archivo para poder enviar."}
-            </span>
-          )}
-        </div>
-      )}
-
-      {!esAdmin && !puedeSubir && !cerrada && (
-        <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "12px 0 0" }}>
-          {accion.estado === "En ejecución" && `Podrás subir la evidencia cuando se cumpla el plazo de ejecución (${accion.plazo_ejecucion || "—"}). Te avisaremos por correo.`}
-          {accion.estado === "Pendiente Verificación" && "Ya enviaste la evidencia. Sistemas de Gestión la está verificando."}
-          {accion.estado === "Observada" && "Corrige el formulario según la observación; después se te pedirá la evidencia."}
-        </p>
-      )}
-      {error && <p style={{ fontSize: 13, color: "var(--danger-text)", marginBottom: 0 }}>{error}</p>}
-    </div>
-  );
-}
 function ObservacionCard({ accion, onEnviada }) {
   const [texto, setTexto] = useState("");
   const [error, setError] = useState("");
@@ -1004,6 +706,9 @@ function ObservacionCard({ accion, onEnviada }) {
 
 function VerificacionForm({ accion, onCompletado }) {
   const [form, setForm] = useState({
+    fecha_verificacion: "",
+    coordinador_sistemas_gestion: "",
+    evidencia_parte2: "",
     descripcion_verificacion: "",
     conclusion: "",
     es_ineficaz: false,
@@ -1016,6 +721,10 @@ function VerificacionForm({ accion, onCompletado }) {
   const enviar = async () => {
     if (!form.descripcion_verificacion.trim()) {
       setError("Describe la verificación antes de cerrar el caso");
+      return;
+    }
+    if (!form.conclusion.trim()) {
+      setError("Escribe la conclusión de la revisión antes de cerrar el caso");
       return;
     }
     setEnviando(true);
@@ -1039,6 +748,17 @@ function VerificacionForm({ accion, onCompletado }) {
 
       <label className="field-label">Descripción de la verificación</label>
       <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.descripcion_verificacion} onChange={set("descripcion_verificacion")} />
+
+      <label className="field-label">Evidencia del plan de acción revisada</label>
+      <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.evidencia_parte2} onChange={set("evidencia_parte2")}
+        placeholder="Describe lo comprobado en los archivos. Sus nombres también aparecerán en el Word." />
+      <div className="grid-2" style={{ marginBottom: 12 }}>
+        <div><label className="field-label">Fecha de verificación (hoy si se deja vacía)</label>
+          <input className="text-input" type="date" value={form.fecha_verificacion} onChange={set("fecha_verificacion")} /></div>
+        <div><label className="field-label">Coordinador de Sistemas de Gestión</label>
+          <input className="text-input" value={form.coordinador_sistemas_gestion} onChange={set("coordinador_sistemas_gestion")}
+            placeholder="Tu nombre de sesión si se deja vacío" /></div>
+      </div>
 
       <label className="field-label">Conclusión</label>
       <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.conclusion} onChange={set("conclusion")} />

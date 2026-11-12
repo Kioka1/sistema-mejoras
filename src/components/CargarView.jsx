@@ -1,7 +1,8 @@
 import { useState, useRef } from "react";
 import { importarExcelAcciones } from "../api.js";
+import ImportarFormulario from "./ImportarFormulario.jsx";
 
-export default function CargarView() {
+export default function CargarView({ onImported }) {
   const [loading, setLoading] = useState(false);
   const [mensaje, setMensaje] = useState(null);
   const [error, setError] = useState(null);
@@ -23,6 +24,7 @@ export default function CargarView() {
     try {
       const data = await importarExcelAcciones(file);
       setMensaje({ importados: data.importados, hojas: data.hojas_procesadas });
+      if (onImported) onImported();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -33,6 +35,8 @@ export default function CargarView() {
 
   return (
     <div>
+      <ImportarFormulario onImported={onImported} />
+      <p className="stage-title">Importar acciones desde Excel</p>
       <input
         type="file"
         ref={fileInputRef}

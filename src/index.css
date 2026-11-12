@@ -2,6 +2,114 @@
 @tailwind components;
 @tailwind utilities;
 
+/* El pulso resalta la etiqueta y la franja; el fondo de la tarjeta permanece estable. */
+.alerta-fila.alerta-proximo, .alerta-fila.alerta-evidencia {
+  --alerta-rgb: 249, 115, 22;
+}
+.alerta-fila.alerta-vencido, .alerta-fila.alerta-formulario {
+  --alerta-rgb: 244, 63, 94;
+}
+.alerta-fila.alerta-verificacion {
+  --alerta-rgb: 34, 197, 94;
+}
+.alerta-fila:not(tr) { position: relative; overflow: hidden; }
+.alerta-fila:not(tr)::before,
+.ticket-table tr.alerta-fila > td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, .3), transparent), rgb(var(--alerta-rgb));
+  border-radius: 3px;
+  pointer-events: none;
+  animation: pulso-franja 2.2s ease-in-out infinite;
+}
+.ticket-table tr.alerta-fila > td:first-child { position: relative; }
+.alerta-fila:not(tr):hover, .alerta-fila:not(tr):focus-within {
+  border-color: rgba(var(--alerta-rgb), .8);
+  box-shadow: inset 0 0 0 1px rgba(var(--alerta-rgb), .35), 0 0 12px rgba(var(--alerta-rgb), .18);
+}
+.ticket-table tr.alerta-fila:hover, .ticket-table tr.alerta-fila:focus-within {
+  outline: 1px solid rgba(var(--alerta-rgb), .8);
+  outline-offset: -1px;
+  box-shadow: 0 0 10px rgba(var(--alerta-rgb), .18);
+}
+@keyframes pulso-franja {
+  0%, 100% { opacity: .7; box-shadow: 0 0 5px rgba(var(--alerta-rgb), .4); }
+  50% { opacity: 1; box-shadow: 0 0 20px 3px rgba(var(--alerta-rgb), .8); }
+}
+.badge-formulario { --badge-rgb: 244, 63, 94; }
+.badge-evidencia { --badge-rgb: 249, 115, 22; }
+.badge-verificacion { --badge-rgb: 34, 197, 94; }
+.pulse-pending-badge {
+  animation: pulse-warning 2.2s ease-in-out infinite;
+  transform-origin: center;
+}
+.pulse-pending-badge .estado-indicador { width: 10px; height: 10px; }
+.pulse-pending-badge .estado-indicador-onda { opacity: .9; }
+.pulse-pending-badge .estado-indicador-centro { box-shadow: 0 0 5px rgba(var(--badge-rgb), .7); }
+@keyframes pulse-warning {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(var(--badge-rgb), .65);
+    border-color: rgba(var(--badge-rgb), .6);
+    background-color: rgba(var(--badge-rgb), .14);
+  }
+  50% {
+    opacity: .95;
+    transform: scale(1.02);
+    box-shadow: 0 0 18px 4px rgba(var(--badge-rgb), .45);
+    border-color: rgba(var(--badge-rgb), .95);
+    background-color: rgba(var(--badge-rgb), .28);
+  }
+}
+.estado-indicador {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.estado-indicador-formulario { --indicador-rgb: 244, 63, 94; }
+.estado-indicador-evidencia { --indicador-rgb: 249, 115, 22; }
+.estado-indicador-verificacion { --indicador-rgb: 34, 197, 94; }
+.estado-indicador.estado-indicador-formulario,
+.estado-indicador.estado-indicador-evidencia,
+.estado-indicador.estado-indicador-verificacion { background-color: transparent; }
+.estado-indicador-onda, .estado-indicador-centro {
+  position: absolute;
+  inset: 0;
+  display: inline-block;
+  border-radius: 50%;
+  background-color: rgb(var(--indicador-rgb));
+  pointer-events: none;
+}
+.estado-indicador-onda { opacity: .75; }
+.alert-dot-blink { animation: subtleBlink 1.8s ease-in-out infinite; }
+.pill .estado-indicador { margin-right: 6px; vertical-align: middle; }
+@keyframes subtleBlink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(1.15); }
+}
+.alerta-etiqueta { display: flex; align-items: center; gap: 5px; margin-top: 6px; font-size: 12px; font-weight: 600; }
+.alerta-texto-proximo { color: #fbbf24; }
+.alerta-texto-vencido { color: #fda4af; }
+.alerta-texto-pendiente { color: #94a3b8; }
+.alerta-texto-revision { color: #86efac; }
+.pill-formulario { background: rgba(244, 63, 94, .15); color: #fda4af; border: 1px solid rgba(244, 63, 94, .8); }
+.pill-evidencia { background: rgba(249, 115, 22, .15); color: #fdba74; border: 1px solid rgba(249, 115, 22, .8); }
+.pill-verificacion { background: rgba(34, 197, 94, .15); color: #86efac; border: 1px solid rgba(34, 197, 94, .8); }
+@media (prefers-reduced-motion: reduce) {
+  .alerta-fila::before, .ticket-table tr.alerta-fila > td:first-child::before,
+  .estado-indicador, .estado-indicador-onda, .alert-dot-blink,
+  .pulse-pending-badge { animation: none !important; }
+  .estado-indicador-onda { display: none; }
+}
+
 /* Con preflight desactivado, "border" de Tailwind necesita esto para verse */
 @layer base {
   [class*="border"] {

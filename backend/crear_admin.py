@@ -4,14 +4,20 @@ Desde la carpeta backend/: python crear_admin.py
 """
 from database import SessionLocal, Base, engine, Usuario
 from auth import hashear_password
+from getpass import getpass
+from pydantic import TypeAdapter, ValidationError
+from schemas import Correo, Nombre, PasswordNueva
 
 Base.metadata.create_all(bind=engine)
 
 db = SessionLocal()
 
-correo = input("Correo de la ingeniera: ").strip()
-nombre = input("Nombre completo: ").strip()
-password = input("Contraseña: ").strip()
+try:
+    correo = TypeAdapter(Correo).validate_python(input("Correo de la ingeniera: "))
+    nombre = TypeAdapter(Nombre).validate_python(input("Nombre completo: "))
+    password = TypeAdapter(PasswordNueva).validate_python(getpass("Contraseña: "))
+except ValidationError:
+    raise SystemExit("Revisa el nombre, el correo y la contraseña. Usa al menos 12 caracteres y hasta 72 bytes.")
 
 existente = db.query(Usuario).filter(Usuario.correo == correo).first()
 if existente:

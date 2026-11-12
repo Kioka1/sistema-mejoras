@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Bell, CheckCheck } from "lucide-react";
+import AlertaPlazo, { IndicadorEstado, claseAlerta } from "./AlertaPlazo.jsx";
 import { fetchNotificaciones, marcarNotificacionLeida, marcarTodasLeidas } from "../api.js";
 
 const CADA_MS = 60 * 1000; // se revisa si hay avisos nuevos cada minuto
@@ -7,6 +8,7 @@ const CADA_MS = 60 * 1000; // se revisa si hay avisos nuevos cada minuto
 export default function Campanita({ onAbrirAccion }) {
   const [abierta, setAbierta] = useState(false);
   const [items, setItems] = useState([]);
+  const [pendientes, setPendientes] = useState([]);
   const [noLeidas, setNoLeidas] = useState(0);
   const [error, setError] = useState(false);
   const contenedor = useRef(null);
@@ -15,6 +17,7 @@ export default function Campanita({ onAbrirAccion }) {
     fetchNotificaciones()
       .then((r) => {
         setItems(r.items || []);
+        setPendientes(r.pendientes || []);
         setNoLeidas(r.no_leidas || 0);
         setError(false);
       })
@@ -26,9 +29,11 @@ export default function Campanita({ onAbrirAccion }) {
     const timer = setInterval(cargar, CADA_MS);
     const alVolver = () => document.visibilityState === "visible" && cargar();
     document.addEventListener("visibilitychange", alVolver);
+    window.addEventListener("entregas-actualizadas", cargar);
     return () => {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", alVolver);
+      window.removeEventListener("entregas-actualizadas", cargar);
     };
   }, []);
 
@@ -68,15 +73,20 @@ export default function Campanita({ onAbrirAccion }) {
     marcarTodasLeidas().catch(() => cargar());
   };
 
+  const urgentes = pendientes.filter((n) => n.estado === "Pendiente Plan de Acción" || n.estado === "Pendiente de evidencia" || n.estado === "Pendiente Verificación" || n.nivel !== "pendiente");
+  const avisoPrincipal = urgentes.find((n) => n.estado === "Pendiente Plan de Acción")
+    || urgentes.find((n) => n.estado === "Pendiente de evidencia")
+    || urgentes.find((n) => n.nivel === "vencido") || urgentes[0];
+
   return (
     <div ref={contenedor} className="relative">
       <button
         type="button"
         onClick={alternar}
-        aria-label={noLeidas > 0 ? `Notificaciones: ${noLeidas} sin leer` : "Notificaciones"}
+        aria-label={`Notificaciones: ${noLeidas} sin leer; ${pendientes.length} pendientes por atender`}
         aria-expanded={abierta}
         title="Notificaciones"
-        className="relative p-2 rounded-lg bg-dark-card border border-dark-border cursor-pointer text-slate-300 hover:text-white hover:bg-dark-cardHover transition-colors"
+        className={`relative p-2 rounded-lg bg-dark-card border border-dark-border cursor-pointer text-slate-300 hover:text-white hover:bg-dark-cardHover transition-colors ${claseAlerta(avisoPrincipal, avisoPrincipal?.estado)}`}
       >
         <Bell size={16} />
         {noLeidas > 0 && (
@@ -106,10 +116,22 @@ export default function Campanita({ onAbrirAccion }) {
           </div>
 
           <div className="max-h-[420px] overflow-y-auto">
+            {pendientes.length > 0 && <div className="p-3 border-b border-dark-border">
+              <p className="text-xs text-slate-300 m-0 mb-2">Pendientes por atender ({pendientes.length})</p>
+              {pendientes.map((n) => <button key={n.accion_id} type="button"
+                onClick={() => { setAbierta(false); onAbrirAccion?.(n.accion_id); }}
+                className={`w-full text-left rounded-lg p-3 mb-2 border border-dark-border bg-dark-card cursor-pointer text-white ${claseAlerta(n, n.estado)}`}>
+                <span className="flex items-center gap-2 text-xs font-semibold"><IndicadorEstado estado={n.estado} />{n.numero}</span>
+                <span className="block text-xs text-slate-300 mt-1">Área: {(n.areas || []).join(" / ") || "Sin área asignada"}</span>
+                <AlertaPlazo alerta={n} />
+                {n.fecha && <span className="block text-xs text-slate-300">Fecha límite: {n.fecha}</span>}
+              </button>)}
+              <p className="text-[11px] text-slate-400 m-0">Estos avisos se actualizan al enviar, corregir o cerrar la actividad.</p>
+            </div>}
             {error && (
               <p className="px-4 py-3 text-xs text-rose-400">No se pudo conectar para revisar avisos nuevos.</p>
             )}
-            {items.length === 0 && !error && (
+            {items.length === 0 && pendientes.length === 0 && !error && (
               <p className="px-4 py-8 text-center text-xs text-slate-400">Todavía no tienes notificaciones.</p>
             )}
             {items.map((n) => (

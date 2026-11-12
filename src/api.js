@@ -1,84 +1,70 @@
-// Cliente de la API — toda la comunicación con el servidor (backend)
-// pasa por aquí. Detecta automáticamente si se accede desde el puerto reenviado en VS Code.
+// La API se publica en el mismo origen que el frontend.
+export const API_BASE = "/api";
+export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ??
+  "349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com";
 
-const hostname = window.location.hostname;
-
-const BACKEND_URL = (hostname.includes("devtunnels.ms") || hostname.includes("app.github.dev"))
-  ? "https://rj02cldk-8000.brs.devtunnels.ms"
-  : "http://localhost:8000";
-
-export const API_BASE = `${BACKEND_URL}/api`;
-
-// --- Sesión ---
-
-const TOKEN_KEY = "sgc_token";
-const USUARIO_KEY = "sgc_usuario";
-
-export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+// Elimina las credenciales que pudieron quedar de la versión anterior.
+try {
+  localStorage.removeItem("sgc_token");
+  localStorage.removeItem("sgc_usuario");
+} catch {
+  // El navegador puede bloquear el acceso al almacenamiento local.
 }
 
-export function getUsuarioGuardado() {
-  const raw = localStorage.getItem(USUARIO_KEY);
-  return raw ? JSON.parse(raw) : null;
+export async function consultarSesion() {
+  const res = await fetch(`${API_BASE}/auth/me`);
+  if (res.status === 401) return null;
+  if (!res.ok) throw await errorDe(res, "No se pudo comprobar la sesión.");
+  return res.json();
 }
 
-function guardarSesion(token, usuario) {
-  localStorage.setItem(TOKEN_KEY, token);
-  localStorage.setItem(USUARIO_KEY, JSON.stringify(usuario));
-}
-
-export function cerrarSesion() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USUARIO_KEY);
+export async function cerrarSesion() {
+  const res = await fetch(`${API_BASE}/auth/logout`, { method: "POST" });
+  if (!res.ok && res.status !== 401) throw await errorDe(res, "No se pudo cerrar la sesión.");
+  window.dispatchEvent(new Event("sesion-terminada"));
 }
 
 export async function login(correo, password) {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ correo, password }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Correo o contraseña incorrectos");
-  }
-  const data = await res.json();
-  guardarSesion(data.access_token, data.usuario);
-  return data.usuario;
+  return autenticar("login", { correo, password }, "Correo o contraseña incorrectos.");
 }
 
-// --- Google Auth ---
-
-export const GOOGLE_CLIENT_ID = "349423893149-r827m4h6cof4l312vd0n356l9ob0n73v.apps.googleusercontent.com";
-
-export async function loginConGoogle(credential) {
-  const res = await fetch(`${API_BASE}/auth/google`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ credential }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "No se pudo iniciar sesión con Google");
-  }
-  const data = await res.json();
-  guardarSesion(data.access_token, data.usuario);
-  return data.usuario;
+export async function obtenerDesafioGoogle() {
+  const res = await fetch(`${API_BASE}/auth/google/desafio`, { method: "POST" });
+  if (!res.ok) throw await errorDe(res, "El inicio de sesión con Google no está disponible.");
+  return (await res.json()).nonce;
 }
 
-// Wrapper central: agrega el token a cada pedido y cierra sesión si expiró
+export async function loginConGoogle(credential, passwordVinculacion) {
+  return autenticar("google", { credential, password_vinculacion: passwordVinculacion },
+    "No se pudo iniciar sesión con Google.");
+}
+
+async function autenticar(ruta, datos, mensaje) {
+  const res = await fetch(`${API_BASE}/auth/${ruta}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(datos),
+  });
+  if (!res.ok) {
+    const error = await errorDe(res, mensaje);
+    error.status = res.status;
+    throw error;
+  }
+  return (await res.json()).usuario;
+}
+
+export async function registrarActividad() {
+  await authFetch(`${API_BASE}/auth/actividad`, { method: "POST" });
+}
 
 async function authFetch(url, options = {}) {
-  const token = getToken();
-  const headers = { ...(options.headers || {}) };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const res = await fetch(url, { ...options, headers });
-
+  const res = await fetch(url, options);
   if (res.status === 401) {
-    cerrarSesion();
-    window.location.reload();
+    window.dispatchEvent(new Event("sesion-terminada"));
+  }
+  if (res.ok && options.method && options.method !== "GET" && !url.includes("/notificaciones")
+      && !url.includes("/auth/")) {
+    window.dispatchEvent(new Event("entregas-actualizadas"));
   }
   return res;
 }
@@ -174,6 +160,23 @@ export async function completarVerificacion(id, data) {
   return res.json();
 }
 
+export async function descargarFormularioWord(accion, firmaSello = null) {
+  const form = new FormData();
+  if (firmaSello) form.append("firma_sello", firmaSello);
+  const res = await authFetch(`${API_BASE}/acciones-mejora/${accion.id}/formulario-word`, {
+    method: "POST", body: form,
+  });
+  if (!res.ok) throw await errorDe(res, "No se pudo generar el formulario Word");
+  const url = URL.createObjectURL(await res.blob());
+  const enlace = document.createElement("a");
+  enlace.href = url;
+  enlace.download = `${accion.numero_ac_original || accion.numero} - Cerrada.docx`;
+  document.body.appendChild(enlace);
+  enlace.click();
+  enlace.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export async function editarAccion(id, data) {
   const res = await authFetch(`${API_BASE}/acciones-mejora/${id}`, {
     method: "PATCH",
@@ -189,7 +192,6 @@ export function urlExportarAcciones(filtro, anio, columnas, ids) {
   if (anio) params.set("anio", anio);
   if (columnas && columnas.length) params.set("columnas", columnas.join(","));
   if (ids && ids.length) params.set("ids", ids.join(","));
-  params.set("token", getToken() || "");
   return `${API_BASE}/acciones-mejora/exportar?${params.toString()}`;
 }
 
@@ -207,11 +209,40 @@ export async function importarExcelAcciones(archivo) {
   return res.json();
 }
 
+export async function revisarFormularioWord(archivo) {
+  const form = new FormData();
+  form.append("archivo", archivo);
+  const res = await authFetch(`${API_BASE}/acciones-mejora/previsualizar-formulario`, { method: "POST", body: form });
+  if (!res.ok) throw await errorDe(res, "No se pudo leer el formulario Word");
+  return res.json();
+}
+
+export async function importarFormularioWord(archivo, datos) {
+  const form = new FormData();
+  form.append("archivo", archivo);
+  form.append("datos", JSON.stringify(datos));
+  const res = await authFetch(`${API_BASE}/acciones-mejora/importar-formulario`, { method: "POST", body: form });
+  if (!res.ok) throw await errorDe(res, "No se pudo importar el formulario");
+  return res.json();
+}
+
+export function urlFormularioHistorico(id) {
+  return `${API_BASE}/formularios-historicos/${id}/descargar`;
+}
+
+export async function cambiarSeguimientoHistorico(id, activo) {
+  const res = await authFetch(`${API_BASE}/formularios-historicos/${id}/seguimiento`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ activo }),
+  });
+  if (!res.ok) throw await errorDe(res, "No se pudo cambiar el seguimiento");
+  return res.json();
+}
+
 // --- Solicitud del Buzón de Sugerencias (lote), recomendaciones, observaciones y evidencias ---
 
 async function errorDe(res, porDefecto) {
   const err = await res.json().catch(() => ({}));
-  return new Error(err.detail || porDefecto);
+  return new Error(typeof err.detail === "string" ? err.detail : porDefecto);
 }
 
 export async function crearLoteAcciones(data) {
@@ -306,7 +337,7 @@ export async function eliminarEvidencia(evidenciaId) {
 }
 
 export function urlDescargarEvidencia(evidenciaId) {
-  return `${API_BASE}/evidencias/${evidenciaId}/descargar?token=${encodeURIComponent(getToken() || "")}`;
+  return `${API_BASE}/evidencias/${evidenciaId}/descargar`;
 }
 
 // --- Solicitudes (módulo independiente) ---

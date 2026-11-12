@@ -4,9 +4,11 @@ Sistematización de Acciones de Mejora (CAPA) y Solicitudes.
 """
 
 from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, Boolean, Table, func
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import os
 import re
+import config_seguridad  # Carga backend/.env antes de leer las variables de conexión.
 
 # --- Configuración de PostgreSQL ---
 PG_USER = os.environ.get("DB_USER", "postgres")
@@ -16,13 +18,13 @@ PG_PORT = os.environ.get("DB_PORT", "5432")
 PG_NAME = os.environ.get("DB_NAME", "sistema_mejoras")
 
 # DATABASE_URL completa (opcional): útil para pruebas, ej. sqlite:///prueba.db
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_NAME}",
+DATABASE_URL = os.getenv("DATABASE_URL") or URL.create(
+    "postgresql", username=PG_USER, password=PG_PASSWORD,
+    host=PG_HOST, port=int(PG_PORT), database=PG_NAME,
 )
 
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=_connect_args)
+_connect_args = {"check_same_thread": False} if isinstance(DATABASE_URL, str) and DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=_connect_args, hide_parameters=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -128,6 +130,8 @@ class AccionMejora(Base):
 
     historial = relationship("HistorialAccion", backref="accion", cascade="all, delete-orphan")
     evidencias = relationship("EvidenciaArchivo", backref="accion", cascade="all, delete-orphan")
+    formulario_historico = relationship("FormularioHistorico", backref="accion", uselist=False,
+                                       cascade="all, delete-orphan", lazy="selectin")
     # Primera Parte: lista de acciones del plan, cada una con su evidencia prevista
     plan_items = relationship(
         "PlanAccionItem",
@@ -138,6 +142,16 @@ class AccionMejora(Base):
     )
     # Áreas responsables (puede ser más de una)
     areas_rel = relationship("Area", secondary=accion_areas, lazy="selectin")
+
+    @property
+    def plazo_evidencias(self):
+        from plazos import fecha_evidencias
+        return fecha_evidencias(self)
+
+    @property
+    def alerta_plazo(self):
+        from plazos import alerta_accion
+        return alerta_accion(self)
 
     @property
     def areas(self):
@@ -169,6 +183,19 @@ class EvidenciaArchivo(Base):
     subido_por = Column(String, nullable=True)
         # A cuál acción del plan (PlanAccionItem) corresponde este archivo; None = sin asignar
     plan_item_id = Column(Integer, ForeignKey("plan_accion_items.id", ondelete="SET NULL"), nullable=True)
+
+
+class FormularioHistorico(Base):
+    """Word original de un caso anterior al uso del sistema; no es una evidencia del plan."""
+    __tablename__ = "formularios_historicos"
+    id = Column(Integer, primary_key=True)
+    accion_id = Column(Integer, ForeignKey("acciones_mejora.id", ondelete="CASCADE"), nullable=False, unique=True)
+    nombre_original = Column(String, nullable=False)
+    nombre_guardado = Column(String, nullable=False)
+    sha256 = Column(String(64), nullable=False, unique=True)
+    fecha_importacion = Column(String, nullable=False)
+    importado_por = Column(String, nullable=False)
+    seguimiento_activo = Column(Boolean, nullable=False, default=False)
 
 
 class Recomendacion(Base):
@@ -256,6 +283,31 @@ class Usuario(Base):
     @property
     def areas(self):
         return sorted(a.nombre for a in self.areas_rel)
+
+
+class SesionUsuario(Base):
+    __tablename__ = "sesiones_usuarios"
+
+    clave = Column(String(64), primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    credencial = Column(String(64), nullable=False)
+    expira = Column(Integer, nullable=False, index=True)
+    ultima_actividad = Column(Integer, nullable=False)
+    usuario = relationship("Usuario")
+
+
+class IdentidadGoogle(Base):
+    __tablename__ = "identidades_google"
+
+    sujeto = Column(String(255), primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, unique=True)
+
+
+class DesafioGoogle(Base):
+    __tablename__ = "desafios_google"
+
+    clave = Column(String(64), primary_key=True)
+    expira = Column(Integer, nullable=False, index=True)
 
 
 class Notificacion(Base):

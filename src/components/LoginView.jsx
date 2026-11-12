@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { LogIn } from "lucide-react";
-import { login, loginConGoogle, GOOGLE_CLIENT_ID } from "../api.js";
+import { login, loginConGoogle, obtenerDesafioGoogle, GOOGLE_CLIENT_ID } from "../api.js";
 
-export default function LoginView({ onLogin }) {
+export default function LoginView({ onLogin, aviso }) {
   const [correo, setCorreo] = useState("");
   const [password, setPassword] = useState("");
+  const [credencialPendiente, setCredencialPendiente] = useState(null);
   const [error, setError] = useState("");
   const [cargando, setCargando] = useState(false);
   const botonGoogleRef = useRef(null);
+  const desafioGoogleRef = useRef(null);
   const [anchoBoton, setAnchoBoton] = useState(320);
 
   const enviar = async (e) => {
@@ -15,7 +17,9 @@ export default function LoginView({ onLogin }) {
     setError("");
     setCargando(true);
     try {
-      const usuario = await login(correo, password);
+      const usuario = credencialPendiente
+        ? await loginConGoogle(credencialPendiente, password)
+        : await login(correo, password);
       onLogin(usuario);
     } catch (err) {
       setError(err.message || "No se pudo iniciar sesión");
@@ -43,35 +47,51 @@ export default function LoginView({ onLogin }) {
         const usuario = await loginConGoogle(respuesta.credential);
         onLogin(usuario);
       } catch (err) {
+        if (err.status === 409) {
+          setPassword("");
+          setCredencialPendiente(respuesta.credential);
+        }
         setError(err.message || "No se pudo iniciar sesión con Google");
       } finally {
         setCargando(false);
       }
     };
 
-    const intentarMontarBoton = () => {
-      if (!window.google || !botonGoogleRef.current) return false;
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: manejarRespuestaGoogle,
-      });
-      window.google.accounts.id.renderButton(botonGoogleRef.current, {
-        theme: "filled_black",
-        size: "large",
-        shape: "pill",
-        width: anchoBoton,
-        text: "signin_with",
-        logo_alignment: "center",
-      });
-      return true;
+    if (!GOOGLE_CLIENT_ID) return;
+    let activo = true;
+    let intervalo;
+    desafioGoogleRef.current ??= obtenerDesafioGoogle();
+    desafioGoogleRef.current.then((nonce) => {
+      if (!activo) return;
+      const intentarMontarBoton = () => {
+        if (!window.google || !botonGoogleRef.current) return false;
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          nonce,
+          callback: manejarRespuestaGoogle,
+        });
+        window.google.accounts.id.renderButton(botonGoogleRef.current, {
+          theme: "filled_black",
+          size: "large",
+          shape: "pill",
+          width: anchoBoton,
+          text: "signin_with",
+          logo_alignment: "center",
+        });
+        return true;
+      };
+      if (!intentarMontarBoton()) {
+        intervalo = setInterval(() => {
+          if (intentarMontarBoton()) clearInterval(intervalo);
+        }, 300);
+      }
+    }).catch((err) => {
+      if (activo) setError(err.message);
+    });
+    return () => {
+      activo = false;
+      clearInterval(intervalo);
     };
-
-    if (!intentarMontarBoton()) {
-      const intervalo = setInterval(() => {
-        if (intentarMontarBoton()) clearInterval(intervalo);
-      }, 300);
-      return () => clearInterval(intervalo);
-    }
   }, [anchoBoton]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -83,26 +103,37 @@ export default function LoginView({ onLogin }) {
           <p>Sistemas de Gestión — Unifranz</p>
         </div>
 
-        <label className="field-label">Correo institucional</label>
-        <input
-          className="text-input"
-          type="email"
-          autoFocus
-          value={correo}
-          onChange={(e) => setCorreo(e.target.value)}
-          style={{ marginBottom: 14 }}
-        />
-
-        <label className="field-label">Contraseña</label>
+        {!credencialPendiente && (
+          <>
+            <label className="field-label">Correo institucional</label>
+            <input
+              className="text-input"
+              type="email"
+              autoComplete="username"
+              maxLength={254}
+              required
+              autoFocus
+              value={correo}
+              onChange={(e) => setCorreo(e.target.value)}
+              style={{ marginBottom: 14 }}
+            />
+          </>
+        )}
+        <label className="field-label">
+          {credencialPendiente ? "Contraseña para vincular tu cuenta" : "Contraseña"}
+        </label>
         <input
           className="text-input"
           type="password"
+          autoComplete="current-password"
+          maxLength={72}
+          required
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           style={{ marginBottom: 18 }}
         />
 
-        {error && <p style={{ color: "var(--danger-text)", fontSize: 13, marginBottom: 14 }}>{error}</p>}
+        {(error || aviso) && <p role="alert" style={{ color: "var(--danger-text)", fontSize: 13, marginBottom: 14 }}>{error || aviso}</p>}
 
         <button
           className="btn-primary"
@@ -111,8 +142,17 @@ export default function LoginView({ onLogin }) {
           style={{ width: "100%", display: "flex", justifyContent: "center", alignItems: "center", gap: 8 }}
         >
           <LogIn size={16} />
-          {cargando ? "Ingresando..." : "Ingresar"}
+          {cargando ? "Ingresando..." : credencialPendiente ? "Vincular e ingresar" : "Ingresar"}
         </button>
+        {credencialPendiente && (
+          <button type="button" className="back-link" onClick={() => {
+            setCredencialPendiente(null);
+            setPassword("");
+            setError("");
+          }}>
+            Cancelar vinculación
+          </button>
+        )}
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0" }}>
           <div style={{ flex: 1, height: 1, background: "var(--border-soft)" }} />

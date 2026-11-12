@@ -1,3 +1,5 @@
+import { nombreEstado } from "../estados.js";
+import AlertaPlazo, { IndicadorEstado, claseBadge, claseAlerta, fechaVencimiento } from "./AlertaPlazo.jsx";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Search, Eye, Edit3, Download, ChevronLeft, ChevronRight } from "lucide-react";
 import { fetchAcciones, urlExportarAcciones } from "../api";
@@ -7,19 +9,29 @@ const POR_PAGINA = 10;
 const ESTADOS = [
   "Pendiente Plan de Acción",
   "Observada",
+  "En ejecución",
+  "Pendiente de evidencia",
   "Pendiente Verificación",
   "Cerrada",
 ];
 
 // Colores del badge de estado (clases completas para que Tailwind las detecte)
 const ESTADO_STYLE = {
-  "Pendiente Plan de Acción": {
-    badge: "bg-amber-500/10 border-amber-500/25 text-amber-400",
-    dot: "bg-amber-400 animate-pulse",
-  },
-  "Pendiente Verificación": {
+  "En ejecución": {
     badge: "bg-sky-500/10 border-sky-500/25 text-sky-400",
     dot: "bg-sky-400",
+  },
+  "Pendiente de evidencia": {
+    badge: "bg-orange-500/15 border-orange-600/80 text-orange-300 font-semibold shadow-sm",
+    dot: "bg-orange-400",
+  },
+  "Pendiente Plan de Acción": {
+    badge: "bg-rose-500/15 border-rose-600/80 text-rose-300 font-semibold shadow-sm",
+    dot: "bg-rose-400",
+  },
+  "Pendiente Verificación": {
+    badge: "bg-emerald-500/15 border-emerald-600/80 text-emerald-300 font-semibold shadow-sm",
+    dot: "bg-emerald-400",
   },
   Cerrada: {
     badge: "bg-emerald-500/10 border-emerald-500/25 text-emerald-400",
@@ -54,6 +66,7 @@ function estiloArea(area) {
 const obtenerNumeroAccion = (item) => {
   if (item.numero_ac_original) return item.numero_ac_original;
   if (item.numero_accion) return item.numero_accion;
+  if (item.numero) return item.numero;
   const num = String(item.id || 1).padStart(2, "0");
   return `AM BS-EA-${num}-26`;
 };
@@ -75,6 +88,16 @@ export default function BuscarView({ usuario, onVerAccion, onEditarAccion }) {
 
   useEffect(() => {
     cargarDatosReales();
+    const actualizar = () => fetchAcciones().then((lista) => setAcciones(Array.isArray(lista) ? lista : [])).catch(() => {});
+    const alVolver = () => document.visibilityState === "visible" && actualizar();
+    const timer = setInterval(actualizar, 60000);
+    document.addEventListener("visibilitychange", alVolver);
+    window.addEventListener("entregas-actualizadas", actualizar);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", alVolver);
+      window.removeEventListener("entregas-actualizadas", actualizar);
+    };
   }, []);
 
   // Atajo Ctrl/⌘ + K para enfocar el buscador
@@ -131,7 +154,7 @@ export default function BuscarView({ usuario, onVerAccion, onEditarAccion }) {
           area.includes(q) ||
           solicitante.includes(q) ||
           categoria.includes(q) ||
-          subcategoria.includes(q);
+          subcategoria.includes(q) || nombreEstado(item.estado || "").toLowerCase().includes(q);
 
         const coincideEstado = !filtroEstado || estadoItem === filtroEstado.toLowerCase();
         const coincideArea = !filtroArea || obtenerArea(item).trim() === filtroArea;
@@ -230,7 +253,7 @@ export default function BuscarView({ usuario, onVerAccion, onEditarAccion }) {
               <option value="">Todos los estados</option>
               {ESTADOS.map((e) => (
                 <option key={e} value={e}>
-                  {e}
+                  {nombreEstado(e)}
                 </option>
               ))}
             </select>
@@ -266,7 +289,7 @@ export default function BuscarView({ usuario, onVerAccion, onEditarAccion }) {
             <Chip onQuitar={() => setQuery("")}>Búsqueda: “{query}”</Chip>
           )}
           {filtroEstado && (
-            <Chip onQuitar={() => setFiltroEstado("")}>Estado: {filtroEstado}</Chip>
+            <Chip onQuitar={() => setFiltroEstado("")}>Estado: {nombreEstado(filtroEstado)}</Chip>
           )}
           {filtroArea && <Chip onQuitar={() => setFiltroArea("")}>Área: {filtroArea}</Chip>}
 
@@ -296,21 +319,16 @@ export default function BuscarView({ usuario, onVerAccion, onEditarAccion }) {
       {/* Lista de tarjetas */}
       {!cargando && !error && visibles.length > 0 && (
         <section className="space-y-3.5">
-          {visibles.map((r, i) => {
+          {visibles.map((r) => {
             const codigo = obtenerNumeroAccion(r);
             const area = obtenerArea(r);
             const estado = r.estado || "Pendiente";
             const est = ESTADO_STYLE[estado] || ESTADO_DEFAULT;
-            const descripcion = obtenerDescripcion(r) || "Sin descripción registrada";
-            const categoriaTexto = r.categoria
-              ? `${r.categoria}${r.subcategoria ? " / " + r.subcategoria : ""}`
-              : null;
 
             return (
               <article
                 key={r.id || codigo}
-                style={{ animationDelay: `${Math.min(i, 8) * 55}ms` }}
-                className="animate-card group relative p-5 rounded-2xl bg-dark-card hover:bg-dark-cardHover border border-dark-border hover:border-slate-700 transition-all duration-200 shadow-lg hover:shadow-2xl hover:-translate-y-0.5"
+                className={`group relative p-5 rounded-2xl bg-dark-card hover:bg-dark-cardHover border border-dark-border hover:border-slate-700 transition-all duration-200 shadow-lg ${claseAlerta(r.alerta_plazo, r.estado)}`}
               >
                 <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                   <div className="space-y-2 flex-1 min-w-0 pr-4">
@@ -330,24 +348,17 @@ export default function BuscarView({ usuario, onVerAccion, onEditarAccion }) {
                       )}
 
                       <span
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${est.badge}`}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${est.badge} ${claseBadge(estado)}`}
                       >
-                        <span className={`w-1.5 h-1.5 rounded-full ${est.dot}`} />
-                        {estado}
+                        <IndicadorEstado estado={estado} className={est.dot} />
+                        {nombreEstado(estado)}
                       </span>
                     </div>
 
-                    <h2 className="m-0 text-sm font-medium text-slate-200 leading-relaxed line-clamp-3">
-                      {descripcion}
-                    </h2>
-
-                    {(r.solicitante || categoriaTexto) && (
-                      <p className="m-0 text-[11px] text-slate-400">
-                        {r.solicitante ? `Solicitante: ${r.solicitante}` : ""}
-                        {r.solicitante && categoriaTexto ? " · " : ""}
-                        {categoriaTexto ? `Categoría: ${categoriaTexto}` : ""}
-                      </p>
-                    )}
+                    <p className="m-0 text-xs text-slate-400">
+                      Creación: {r.fecha_creacion || "—"} · Vencimiento: {fechaVencimiento(r) || "—"}
+                    </p>
+                    <AlertaPlazo alerta={r.alerta_plazo} />
                   </div>
 
                   <div className="flex items-center gap-2.5 flex-shrink-0 self-end md:self-start md:pt-1">

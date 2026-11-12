@@ -9,7 +9,7 @@ import {
   Users,
   ChevronRight,
 } from "lucide-react";
-import { fetchAcciones, getToken, getUsuarioGuardado, cerrarSesion } from "./api.js";
+import { fetchAcciones, consultarSesion, cerrarSesion, registrarActividad } from "./api.js";
 import LoginView from "./components/LoginView.jsx";
 import BuscarView from "./components/BuscarView.jsx";
 import RegistrarView from "./components/RegistrarView.jsx";
@@ -33,7 +33,9 @@ const TAB_USUARIOS = { key: "usuarios", label: "Usuarios", icon: Users };
 const TABS_SOLO_ADMIN = ["registrar", "cargar"];
 
 export default function App() {
-  const [usuario, setUsuario] = useState(() => (getToken() ? getUsuarioGuardado() : null));
+  const [usuario, setUsuario] = useState(null);
+  const [verificandoSesion, setVerificandoSesion] = useState(true);
+  const [errorSesion, setErrorSesion] = useState("");
   const [tab, setTab] = useState("buscar");
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -42,21 +44,61 @@ export default function App() {
   const [accionSeleccionada, setAccionSeleccionada] = useState(null);
   const [modoAccion, setModoAccion] = useState("ver");
 
-  const loadData = () => {
-    setLoading(true);
-    fetchAcciones()
-      .then((r) => {
-        setData(r);
-        setError("");
-      })
-      .catch(() =>
-        setError("No se pudo conectar con el servidor. Verifica que el backend esté corriendo.")
-      )
-      .finally(() => setLoading(false));
-  };
+  useEffect(() => {
+    let vigente = true;
+    const limpiar = () => {
+      setUsuario(null);
+      setData([]);
+      setAccionSeleccionada(null);
+      setModoAccion("ver");
+      setTab("buscar");
+    };
+    window.addEventListener("sesion-terminada", limpiar);
+    consultarSesion()
+      .then((sesion) => { if (vigente) setUsuario(sesion); })
+      .catch(() => { if (vigente) setErrorSesion("No se pudo comprobar la sesión."); })
+      .finally(() => { if (vigente) setVerificandoSesion(false); });
+    return () => {
+      vigente = false;
+      window.removeEventListener("sesion-terminada", limpiar);
+    };
+  }, []);
 
   useEffect(() => {
-    if (usuario) loadData();
+    if (!usuario) return;
+    let huboActividad = false;
+    const eventos = ["pointerdown", "keydown", "wheel"];
+    const detectar = (evento) => {
+      if (evento.isTrusted) huboActividad = true;
+    };
+    eventos.forEach((tipo) => window.addEventListener(tipo, detectar, { passive: true }));
+    const intervalo = setInterval(() => {
+      if (huboActividad) {
+        huboActividad = false;
+        registrarActividad().catch(() => {});
+      }
+    }, 60000);
+    return () => {
+      eventos.forEach((tipo) => window.removeEventListener(tipo, detectar));
+      clearInterval(intervalo);
+    };
+  }, [usuario]);
+
+  useEffect(() => {
+    if (!usuario) return;
+    let vigente = true;
+    setLoading(true);
+    fetchAcciones()
+      .then((registros) => {
+        if (!vigente) return;
+        setData(registros);
+        setError("");
+      })
+      .catch(() => {
+        if (vigente) setError("No se pudo conectar con el servidor. Verifica que el backend esté corriendo.");
+      })
+      .finally(() => { if (vigente) setLoading(false); });
+    return () => { vigente = false; };
   }, [usuario]);
 
   const handleVerAccionDesdeBusqueda = (accion) => {
@@ -71,13 +113,21 @@ export default function App() {
     setTab("acciones");
   };
 
-  const salir = () => {
-    cerrarSesion();
-    setUsuario(null);
+  const salir = async () => {
+    setErrorSesion("");
+    try {
+      await cerrarSesion();
+    } catch (error) {
+      setErrorSesion(error.message);
+    }
   };
 
+  if (verificandoSesion) {
+    return <div className="login-screen" role="status">Comprobando sesión…</div>;
+  }
+
   if (!usuario) {
-    return <LoginView onLogin={setUsuario} />;
+    return <LoginView aviso={errorSesion} onLogin={(sesion) => { setErrorSesion(""); setUsuario(sesion); }} />;
   }
 
   const iniciales = (usuario.nombre_completo || "")
@@ -181,6 +231,7 @@ export default function App() {
             >
               <LogOut size={16} />
             </button>
+            {errorSesion && <p role="alert">{errorSesion}</p>}
           </div>
         </div>
       </aside>
@@ -252,7 +303,7 @@ export default function App() {
                     }}
                   />
                 )}
-                {tab === "cargar" && <CargarView />}
+                {tab === "cargar" && <CargarView onImported={() => fetchAcciones().then(setData).catch(() => {})} />}
                 {tab === "panel" && <PanelView />}
                 {tab === "usuarios" && <UsuariosView />}
               </>

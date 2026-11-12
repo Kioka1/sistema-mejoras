@@ -1,0 +1,5 @@
+Options -Indexes
+RewriteEngine On
+# El repositorio puede estar dentro del DocumentRoot de XAMPP.
+RewriteRule "(^|/)[.]" - [F,NC]
+RewriteRule "!^dist(/|$)" - [F,NC]

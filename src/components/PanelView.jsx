@@ -1,3 +1,4 @@
+import { nombreEstado } from "../estados.js";
 import { useEffect, useState } from "react";
 import {
   BarChart,
@@ -24,10 +25,10 @@ const PALETA_COLORES = [
 ];
 
 const ESTADO_MAP = {
-  "Pendiente Plan de Acción": "#e8672f",
+  "Pendiente de llenado de formulario": "#f43f5e",
   "En ejecución": "#6366f1",
   "Pendiente de evidencia": "#fb923c",
-  "Pendiente Verificación": "#f0b429",
+  "Pendiente Verificación": "#22c55e",
   Observada: "#f0625f",
   Cerrada: "#4ade9a",
 };
@@ -78,7 +79,7 @@ export default function PanelView() {
           enVerificacion: contar((a) => a.estado === "Pendiente Verificación"),
           cerradas: contar((a) => a.estado === "Cerrada"),
           porArea: Object.keys(porAreaMapa).map((k) => ({ sistema: k, cantidad: porAreaMapa[k] })),
-          porEstado: Object.keys(porEstadoMapa).map((k) => ({ estado: k, cantidad: porEstadoMapa[k] })),
+          porEstado: Object.keys(porEstadoMapa).map((k) => ({ estado: nombreEstado(k), cantidad: porEstadoMapa[k] })),
         });
       } catch (e) {
         console.error("Error al procesar indicadores:", e);
@@ -101,7 +102,7 @@ export default function PanelView() {
         </div>
         <div className="metric-card">
           <div className="num">{metrics.pendientesPlan}</div>
-          <div className="lbl">Pendientes de plan</div>
+          <div className="lbl">Formularios pendientes</div>
         </div>
         <div className="metric-card">
           <div className="num">{metrics.enEjecucion}</div>
