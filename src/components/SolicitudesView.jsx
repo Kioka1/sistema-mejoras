@@ -343,7 +343,7 @@ function DetalleSolicitud({ id, rol, onBack }) {
       </div>
 
       <div className="card">
-        <p className="stage-title" style={{ marginBottom: 8 }}>Bitácora</p>
+        <p className="stage-title" style={{ marginBottom: 8 }}>Historia</p>
         {(solicitud.historial || []).map((h, i) => (
           <div className="timeline-item" key={i}>
             <span>{h.fecha}</span><span>—</span><span>{h.evento}</span>

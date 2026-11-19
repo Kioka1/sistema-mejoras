@@ -5,7 +5,7 @@ from unittest.mock import patch
 import test_regresiones as regresiones
 from plazos import sumar_habiles, dias_habiles, alerta_accion
 from schemas import AccionMejoraCreate, AccionMejoraEdicion, AccionMejoraOut, LoteAccionesCreate, NotificacionesOut, ObservacionCreate
-from database import FormularioHistorico, asignar_areas
+from database import FormularioHistorico, Usuario, asignar_areas
 import main
 
 
@@ -13,6 +13,39 @@ class Plazos(unittest.TestCase):
     setUp = regresiones.Regresiones.setUp
     accion = regresiones.Regresiones.accion
     plan = regresiones.Regresiones.plan
+
+    def test_asignacion_avisa_a_todos_los_activos_del_area_sin_duplicar(self):
+        segundo = Usuario(nombre_completo="TI 2", correo="ti2@test.local", password_hash="sin login", rol="usuario")
+        otro = Usuario(nombre_completo="Otra área", correo="otra@test.local", password_hash="sin login", rol="usuario")
+        inactivo = Usuario(nombre_completo="TI inactivo", correo="inactivo@test.local", password_hash="sin login", rol="usuario", activo=False)
+        self.db.add_all([segundo, otro, inactivo])
+        self.db.flush()
+        asignar_areas(self.db, segundo, ["TI", "Sistemas"])
+        asignar_areas(self.db, otro, ["Otra área"])
+        asignar_areas(self.db, inactivo, ["TI"])
+        self.db.commit()
+        with patch.object(main, "enviar_correo") as correo:
+            main.crear_accion(AccionMejoraCreate(declaracion_hallazgo="Prueba", areas=["TI", "Sistemas"]), self.db, self.admin)
+        self.assertEqual(sorted(c.args[0] for c in correo.call_args_list), ["area@test.local", "ti2@test.local"])
+
+    def test_recordatorio_un_habil_antes_y_no_tras_entregar(self):
+        accion = self.accion()
+        accion.plazo_entrega_plan = "2026-11-10"
+        self.db.commit()
+        with patch.object(main, "enviar_correo") as correo:
+            with patch.object(main, "hoy_local", return_value=date(2026, 11, 6)):
+                main._revisar_vencidas_y_notificar(self.db)
+            correo.assert_not_called()
+            with patch.object(main, "hoy_local", return_value=date(2026, 11, 9)):
+                main._revisar_vencidas_y_notificar(self.db)
+                main._revisar_vencidas_y_notificar(self.db)
+            correo.assert_called_once()
+            self.assertIn("1 día(s) hábil(es)", correo.call_args.args[1])
+            accion.estado = "Pendiente Verificación"
+            self.db.commit()
+            with patch.object(main, "hoy_local", return_value=date(2026, 11, 10)):
+                main._revisar_vencidas_y_notificar(self.db)
+            correo.assert_called_once()
 
     def test_diez_habiles_y_margen_evidencias_cruzan_fin_de_semana(self):
         self.assertEqual(sumar_habiles(date(2026, 11, 6), 10), date(2026, 11, 20))

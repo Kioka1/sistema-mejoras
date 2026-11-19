@@ -1,3 +1,5 @@
+import CampoGuiado from "./CampoGuiado.jsx";
+
 export function fechaBolivia() {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "America/La_Paz" }).format(new Date());
 }
@@ -33,8 +35,10 @@ export default function PlazoEntrega({ value, onChange }) {
           }} />
       </label>
       <label className="field-label">Fecha límite
+        <CampoGuiado etiqueta="Fecha límite para llenar y enviar el formulario" guia="X Completa Sistemas de Gestión · Indica la fecha límite">
         <input className="text-input" type="date" min={fechaBolivia()} value={value}
           onChange={(e) => onChange(e.target.value)} required />
+        </CampoGuiado>
       </label>
     </div>
     <p className="empty-note">Por defecto: 10 días hábiles (2 semanas). Puedes cambiar los días o elegir una fecha. Se cuentan lunes a viernes.</p>

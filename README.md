@@ -78,6 +78,39 @@ parámetros SQL ni el cuerpo de las notificaciones. Los adjuntos se comprueban
 por tamaño y tipo, y se sirven como descargas privadas. La comprobación de
 formato no sustituye el análisis antimalware de los archivos.
 
+## Correos institucionales
+
+Los avisos se envían a cada usuario activo que pertenezca a alguna de las áreas
+asignadas, sin duplicar destinatarios por pertenecer a varias áreas. La firma de
+Abigail E. Arancibia Vásquez se conserva en `backend/templates/firma_correo.html`;
+su imagen se incorpora al mensaje desde `firma_unifranz.png`, sin descargarla al
+abrir el correo. Cada aviso incluye una versión HTML y otra de texto plano.
+
+Configura `SMTP_USER` y `SMTP_PASSWORD` de una cuenta institucional autorizada en
+el entorno privado del servidor. La implementación actual utiliza SMTP con SSL
+en el puerto 465 y autenticación; para Gmail se necesita una contraseña de
+aplicación permitida por la administración de Google Workspace. La contraseña
+habitual de la cuenta no sirve para este mecanismo. Si TI exige OAuth o un relay
+institucional con otro mecanismo, se deberá adaptar el transporte antes de activar
+los envíos. No copies credenciales al código ni al control de versiones.
+
+`SMTP_FROM_NAME` controla el nombre visible; la dirección remitente real es
+`SMTP_USER`. Para enviar desde `abigail.arancibia@unifranz.edu.bo`, esa debe ser
+la cuenta de envío autorizada. `SMTP_REPLY_TO` dirige las respuestas a Abigail.
+`SISTEMA_URL` agrega el enlace de acceso: debe ser una dirección accesible para
+los destinatarios. Conservar vacío mientras no se haya definido la publicación.
+
+Los correos de vencimiento empiezan un día hábil antes de la entrega del
+formulario o de las evidencias, y continúan el día límite y mientras esté
+vencido, como máximo una vez por día y etapa. Las alertas visuales siguen
+anticipándose dos días hábiles. El servidor debe estar encendido; revisa los
+plazos cada hora. Tras configurar el entorno o actualizar el código, reinicia
+el backend. Sin credenciales SMTP se conservan únicamente los avisos internos.
+
+Las pruebas simulan SMTP; no demuestran recepción real. Antes de ponerlo en uso,
+verifica con la cuenta autorizada y un destinatario de prueba tanto recepción
+como formato en Gmail. La apariencia puede variar entre clientes de correo.
+
 ## Comprobaciones
 
 Desde la raíz del proyecto:

@@ -98,7 +98,7 @@ from seguridad_archivos import nombre_archivo_seguro, validar_evidencia, validar
 
 from importar_formularios import router as formularios_router
 from notificaciones import enviar_correo
-from plazos import hoy_local, sumar_habiles, alerta_accion
+from plazos import hoy_local, sumar_habiles, dias_habiles, alerta_accion
 from evidencias import checklist, comprobar_archivo, validar_nombres
 
 from schemas import (
@@ -2488,7 +2488,7 @@ def completar_verificacion(accion_id: IdRuta, data: VerificacionUpdate, db: Sess
 
 
 def _revisar_vencidas_y_notificar(db: Session):
-    """Avisos diarios desde dos días hábiles antes, sin repetir en el mismo día."""
+    """Avisos diarios desde un día hábil antes, sin repetir en el mismo día."""
     hoy = hoy_local()
     for accion in db.query(AccionMejora).filter(AccionMejora.estado.in_(
             ["Pendiente Plan de Acción", "Observada", "En ejecución", "Pendiente de evidencia"])).all():
@@ -2504,6 +2504,9 @@ def _revisar_vencidas_y_notificar(db: Session):
                 pass
         alerta = alerta_accion(accion, hoy)
         if not alerta or alerta["nivel"] == "pendiente":
+            continue
+        # La señal visual se anticipa dos días; el correo comienza uno hábil antes.
+        if dias_habiles(hoy, date.fromisoformat(alerta["fecha"])) > 1:
             continue
         campo = ("ultima_notificacion_vencimiento" if alerta["tipo"] == "Formulario"
                  else "ultima_notificacion_evidencia")

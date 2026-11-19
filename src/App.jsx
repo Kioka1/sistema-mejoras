@@ -304,7 +304,7 @@ export default function App() {
                   />
                 )}
                 {tab === "cargar" && <CargarView onImported={() => fetchAcciones().then(setData).catch(() => {})} />}
-                {tab === "panel" && <PanelView />}
+                {tab === "panel" && <PanelView usuario={usuario} onAbrirAccion={handleVerAccionDesdeBusqueda} />}
                 {tab === "usuarios" && <UsuariosView />}
               </>
             )}

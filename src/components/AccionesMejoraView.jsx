@@ -1,3 +1,4 @@
+import CampoGuiado, { GuiaRoles, SeccionGuiada } from "./CampoGuiado.jsx";
 import { nombreEstado } from "../estados.js";
 import PlazoEntrega, { fechaBolivia, sumarHabiles } from "./PlazoEntrega.jsx";
 import AlertaPlazo, { IndicadorEstado, claseBadge, claseAlerta, fechaVencimiento } from "./AlertaPlazo.jsx";
@@ -317,6 +318,8 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
       </button>
       <div className="stage-section active-stage">
         <p className="stage-title">Nueva solicitud — Buzón de Sugerencias (BS)</p>
+        <GuiaRoles />
+        <SeccionGuiada>Datos iniciales — Completa Sistemas de Gestión / Administrador</SeccionGuiada>
         <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0 }}>
           Cada acción de mejora recibe su código correlativo (AM BS-NN-AA). El área recibe todo en un solo correo.
         </p>
@@ -324,7 +327,7 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
         <div className="grid-2">
           <div>
             <label className="field-label">Proceso(s)</label>
-            <input className="text-input" style={{ marginBottom: 12 }} value={procesos} onChange={(e) => setProcesos(e.target.value)} />
+            <CampoGuiado etiqueta="Proceso(s)"><input className="text-input" style={{ marginBottom: 12 }} value={procesos} onChange={(e) => setProcesos(e.target.value)} /></CampoGuiado>
             <label className="field-label">Área / Carrera destinataria</label>
             <select className="text-input" value={area} onChange={(e) => setArea(e.target.value)} disabled={cargandoAreas}>
               <option value="">{cargandoAreas ? "Cargando..." : "— Elige un área —"}</option>
@@ -351,13 +354,15 @@ function NuevaSolicitudForm({ onCancel, onCreated }) {
         <p className="stage-title" style={{ marginTop: 20 }}>Acciones de mejora</p>
         {hallazgos.map((h, i) => (
           <div key={i} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "flex-start" }}>
-            <textarea
+            <CampoGuiado etiqueta={`Hallazgo / queja ${i + 1}`}>
+<textarea
               className="text-input"
               rows={3}
               placeholder={`Hallazgo / queja ${i + 1}`}
               value={h}
               onChange={(e) => cambiar(hallazgos, setHallazgos, i, e.target.value)}
             />
+</CampoGuiado>
             {hallazgos.length > 1 && (
               <button className="icon-btn" title="Quitar" onClick={() => quitar(hallazgos, setHallazgos, i)}>✕</button>
             )}
@@ -646,9 +651,9 @@ function DetalleAccion({ id, rol, onBack }) {
         </div>
       )}
 
-      {/* Bitácora */}
+      {/* Historia disponible para quienes tienen acceso a esta acción */}
       <div className="card" style={{ marginTop: 16 }}>
-        <p className="stage-title" style={{ marginBottom: 8 }}>Bitácora</p>
+        <p className="stage-title" style={{ marginBottom: 8 }}>Historia</p>
         {(accion.historial || []).length === 0 ? (
           <p className="empty-note">Todavía no hay eventos registrados.</p>
         ) : (
@@ -746,22 +751,26 @@ function VerificacionForm({ accion, onCompletado }) {
         Revisa si el plan de acción resolvió el problema y cierra el caso.
       </p>
 
+      <GuiaRoles />
+      <SeccionGuiada>Segunda parte — Completa Sistemas de Gestión / Administrador</SeccionGuiada>
       <label className="field-label">Descripción de la verificación</label>
-      <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.descripcion_verificacion} onChange={set("descripcion_verificacion")} />
+      <CampoGuiado rol="gestion" etiqueta="Descripción de la verificación"><textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.descripcion_verificacion} onChange={set("descripcion_verificacion")} /></CampoGuiado>
 
       <label className="field-label">Evidencia del plan de acción revisada</label>
+      <CampoGuiado etiqueta="Evidencia del plan de acción revisada" guia="X Completa Sistemas de Gestión · Describe lo comprobado en los archivos de evidencia.">
       <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.evidencia_parte2} onChange={set("evidencia_parte2")}
         placeholder="Describe lo comprobado en los archivos. Sus nombres también aparecerán en el Word." />
+      </CampoGuiado>
       <div className="grid-2" style={{ marginBottom: 12 }}>
         <div><label className="field-label">Fecha de verificación (hoy si se deja vacía)</label>
-          <input className="text-input" type="date" value={form.fecha_verificacion} onChange={set("fecha_verificacion")} /></div>
+          <CampoGuiado rol="gestion" etiqueta="Fecha de verificación (hoy si se deja vacía)" guia="X Completa Sistemas de Gestión · Se usa la fecha de hoy si la dejas vacía"><input className="text-input" type="date" value={form.fecha_verificacion} onChange={set("fecha_verificacion")} /></CampoGuiado></div>
         <div><label className="field-label">Coordinador de Sistemas de Gestión</label>
-          <input className="text-input" value={form.coordinador_sistemas_gestion} onChange={set("coordinador_sistemas_gestion")}
-            placeholder="Tu nombre de sesión si se deja vacío" /></div>
+          <CampoGuiado rol="gestion" etiqueta="Coordinador de Sistemas de Gestión" guia="X Completa Sistemas de Gestión · Se usa tu nombre de sesión si lo dejas vacío"><input className="text-input" value={form.coordinador_sistemas_gestion} onChange={set("coordinador_sistemas_gestion")}
+            placeholder="Tu nombre de sesión si se deja vacío" /></CampoGuiado></div>
       </div>
 
       <label className="field-label">Conclusión</label>
-      <textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.conclusion} onChange={set("conclusion")} />
+      <CampoGuiado rol="gestion" etiqueta="Conclusión"><textarea className="text-input" rows={3} style={{ marginBottom: 12 }} value={form.conclusion} onChange={set("conclusion")} /></CampoGuiado>
 
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
         <input
